@@ -1183,6 +1183,28 @@ app.get('/api/orchestrator/memory/recent', async (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
+// Serve the BUILT frontend from this same process (the stable "26 model"). One
+// plain `node index.js` then serves the API, the WebSockets, AND the UI on this
+// one port — no separate Vite dev server (whose crash used to drag the whole app
+// down via `concurrently -k`) and no `--watch` (whose restart-on-file-change
+// killed every live pty). This block only activates when a production build
+// exists at frontend/dist, so in development the Vite server on :5200 (which
+// proxies /api + /ws here) still serves the UI and this never fights it.
+// ---------------------------------------------------------------------------
+const FRONTEND_DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'frontend', 'dist')
+if (existsSync(path.join(FRONTEND_DIST, 'index.html'))) {
+  app.use(express.static(FRONTEND_DIST, { etag: false, maxAge: 0 }))
+  // SPA fallback: any non-API, non-WS GET returns index.html so client-side
+  // routes (/session/:id, /project/:id) resolve on a hard refresh / deep link.
+  // Version-agnostic (plain middleware) so it works under Express 4 and 5.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+    if (req.path.startsWith('/api') || req.path.startsWith('/ws')) return next()
+    res.sendFile(path.join(FRONTEND_DIST, 'index.html'))
+  })
+}
+
+// ---------------------------------------------------------------------------
 // WebSockets — single HTTP server, manual upgrade routing
 // ---------------------------------------------------------------------------
 

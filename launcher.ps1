@@ -17,12 +17,15 @@ Set-Location $root
 
 $ports = '4040,5200,4111,5111'
 
-# --- 1. Open Chrome AFTER a short delay, detached (own process, never killed). ---
+# --- 1. Open Chrome once the server is actually serving, detached (own process,
+#        never killed). The server now serves the UI + API + WS on ONE port (4040),
+#        so we poll /api/health (the first-run / post-update build can take ~a
+#        minute) and only then open http://localhost:4040. No Vite to wait on. ---
 $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 if (-not $NoBrowser -and (Test-Path $chrome)) {
   Start-Process powershell -WindowStyle Hidden -ArgumentList @(
     '-NoProfile','-Command',
-    "Start-Sleep 8; Start-Process '$chrome' @('--remote-debugging-port=9222','--user-data-dir=C:/Users/Shubham(Code)/ChromeDebug','http://localhost:5200')"
+    "for(`$i=0;`$i -lt 150;`$i++){ try{ if((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://localhost:4040/api/health').StatusCode -eq 200){break} }catch{}; Start-Sleep 1 }; Start-Process '$chrome' @('--remote-debugging-port=9222','--user-data-dir=C:/Users/Shubham(Code)/ChromeDebug','http://localhost:4040')"
   ) | Out-Null
 }
 
@@ -52,9 +55,25 @@ $env:PORT = '4111'
 $canvas = Start-Process cmd -PassThru -WindowStyle Hidden -ArgumentList '/c', "npm --prefix `"$root\excalidraw-canvas`" run dev"
 $env:PORT = ''
 
-# --- 5. Main app (server 4040 + frontend 5200) as a visible child in this console.
-#        -PassThru gives us its tree root; -NoNewWindow keeps logs in this window. ---
-$main = Start-Process cmd -PassThru -NoNewWindow -ArgumentList '/c', "npm run dev"
+# --- 5. Build the UI once (first run, or after a git update changed the code) so
+#        the SERVER can serve it, then run the app as a SINGLE, STABLE process:
+#        `node index.js` — NO --watch, NO Vite, NO concurrently. This is the "26
+#        model": a restart-on-file-change or a Vite crash can no longer drop your
+#        live terminal sessions (they die only if the server is actually stopped).
+#        The build is skipped on plain relaunches (marker == current commit). ---
+$head = (& git rev-parse HEAD 2>$null); if (-not $head) { $head = 'nogit' }
+$head = $head.Trim()
+$distIndex = Join-Path $root 'frontend\dist\index.html'
+$marker    = Join-Path $root 'frontend\dist\.built-commit'
+$built     = if (Test-Path $marker) { (Get-Content $marker -Raw -ErrorAction SilentlyContinue).Trim() } else { '' }
+if ((-not (Test-Path $distIndex)) -or ($built -ne $head)) {
+  Write-Host "Building the UI (first run / after an update) - this takes about a minute..."
+  cmd /c "npm run build -w frontend"
+  if (Test-Path $distIndex) { Set-Content -Path $marker -Value $head -NoNewline }
+  else { Write-Host "  !! UI build failed - the app may not load. Check the errors above." }
+}
+Write-Host "Starting the app (stable single-process server on 4040)..."
+$main = Start-Process cmd -PassThru -NoNewWindow -ArgumentList '/c', "npm run start -w server"
 
 # --- 6. Detached watchdog: the moment THIS launcher process ends (window closed,
 #        Ctrl+C, or crash), kill the app's process trees and free its ports. This
@@ -75,7 +94,7 @@ Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Comman
 
 Write-Host ""
 Write-Host "  New Claude Manager"
-Write-Host "  UI http://localhost:5200   |   server 4040   |   MCP claude-manager"
+Write-Host "  UI + server http://localhost:4040   |   MCP claude-manager"
 Write-Host "  Canvas http://localhost:5111   |   canvas API 4111"
 Write-Host "  Close this window (or Ctrl+C) to stop the ENTIRE app - nothing is left running."
 Write-Host ""
