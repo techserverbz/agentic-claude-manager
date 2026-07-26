@@ -15,7 +15,10 @@
 
 import os from 'node:os'
 import crypto from 'node:crypto'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import pty from 'node-pty'
+import { sessionsDirFor } from './projects.js'
 
 // Same charset claudecodeui uses for shell session ids.
 const TERMINAL_SESSION_ID_RE = /^[a-zA-Z0-9_.\-:]+$/
@@ -525,7 +528,22 @@ export function handleTerminalConnection(ws, { project, sessionId, forceRestart 
   }
 
   // FRESH SPAWN: no live session for this key — start one (claudecodeui parity).
-  const command = buildCommand(resumeId, freshId)
+  // If we're "resuming" a session whose <id>.jsonl was never written (a chat that
+  // was opened but never typed into — claude only persists after the first
+  // message), skip the doomed `--resume` (which prints "No conversation found")
+  // and START that same id fresh via --session-id: no error flashes, the chat
+  // keeps its id, and typing finally writes its JSONL so later resumes succeed.
+  let missingResume = false
+  if (resumeId) {
+    try {
+      missingResume = !existsSync(path.join(sessionsDirFor(project), `${resumeId}.jsonl`))
+    } catch {
+      missingResume = false // can't tell → try --resume (the `|| --session-id` still recovers)
+    }
+  }
+  const command = missingResume
+    ? buildCommand(null, resumeId) // start the SAME id fresh
+    : buildCommand(resumeId, freshId)
   const shell = IS_WINDOWS ? 'powershell.exe' : 'bash'
   const shellArgs = IS_WINDOWS ? ['-Command', command] : ['-c', command]
 
