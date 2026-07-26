@@ -284,11 +284,18 @@ function buildCommand(resumeId, freshId) {
     const idFlag = freshId ? `--session-id ${freshId} ` : ''
     return `claude ${idFlag}${flag}`
   }
+  // Resume the session. If --resume FAILS — most commonly because the session was
+  // opened but never typed into, so claude never wrote its <id>.jsonl ("No
+  // conversation found with session id ...") — fall back to STARTING that SAME id
+  // fresh with --session-id, NOT a bare `claude` (which would mint a brand-new
+  // random id and orphan the chat: reopening it would show the trust gate and a
+  // different terminal). This way the chat keeps its id and, once you type, its
+  // JSONL is finally written so future resumes succeed.
   if (IS_WINDOWS) {
     // PowerShell 5.1 has no || — chain on $LASTEXITCODE instead.
-    return `claude --resume "${resumeId}" ${flag}; if ($LASTEXITCODE -ne 0) { claude ${flag} }`
+    return `claude --resume "${resumeId}" ${flag}; if ($LASTEXITCODE -ne 0) { claude --session-id "${resumeId}" ${flag} }`
   }
-  return `claude --resume "${resumeId}" ${flag} || claude ${flag}`
+  return `claude --resume "${resumeId}" ${flag} || claude --session-id "${resumeId}" ${flag}`
 }
 
 function buildEnv(project, token) {
