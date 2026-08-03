@@ -367,9 +367,43 @@ function sizePty(entry) {
   if (cols === null || rows === null) return
   try {
     entry.pty.resize(cols, rows)
+    entry.lastCols = cols
+    entry.lastRows = rows
   } catch {
     /* resize race / pty gone */
   }
+}
+
+/**
+ * Force claude to fully clear + repaint its screen: bump the pty one row
+ * smaller, then restore. Each SIGWINCH makes claude's TUI re-layout from
+ * scratch, which overwrites the stale cells a plain diff repaint leaves behind
+ * after a big grid change (duplicated status rows, orphaned hint chips, etc.).
+ * Called when a viewer's resize has SETTLED — never during a drag.
+ */
+function nudgeRepaint(entry) {
+  if (entry.exited || !entry.pty) return
+  const cols = entry.lastCols
+  const rows = entry.lastRows
+  if (typeof cols !== 'number' || typeof rows !== 'number' || rows <= 2) return
+  if (entry.nudgeTimer) clearTimeout(entry.nudgeTimer)
+  try {
+    entry.pty.resize(cols, rows - 1)
+  } catch {
+    return
+  }
+  entry.nudgeTimer = setTimeout(() => {
+    entry.nudgeTimer = null
+    if (entry.exited || !entry.pty) return
+    // restore ONLY if no newer resize landed while we were nudged small
+    if (entry.lastCols === cols && entry.lastRows === rows) {
+      try {
+        entry.pty.resize(cols, rows)
+      } catch {
+        /* pty gone */
+      }
+    }
+  }, 60)
 }
 
 /**
@@ -422,8 +456,16 @@ function attachWs(ws, entry, key, cols, rows) {
     } else if (msg.type === 'visible') {
       // a background tab must not pin the shared pty narrow — only foreground
       // (visible) viewers count toward the min grid. Re-size on every change.
+      const wasVisible = ws.__visible
       ws.__visible = msg.value !== false
       sizePty(entry)
+      // freshly-revealed tab: its screen mirrored output sized for OTHER
+      // viewers while hidden — force a clean full repaint at the new min grid
+      if (!wasVisible && ws.__visible) nudgeRepaint(entry)
+    } else if (msg.type === 'repaint') {
+      // viewer's resize settled — overwrite the stale cells a diff repaint
+      // leaves behind (duplicate status rows, orphaned hint chips)
+      nudgeRepaint(entry)
     }
   })
 

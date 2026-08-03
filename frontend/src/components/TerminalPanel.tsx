@@ -288,9 +288,21 @@ export function TerminalPanel({
       }
     }
     /* whenever the grid dimensions actually change, tell the pty — claude gets a
-       SIGWINCH and repaints at the new width. (No proposeDimensions/blank/pty-
-       first dance: in the normal buffer the reflow is xterm-native and clean.) */
-    const resizeSub = term.onResize(() => sendResize())
+       SIGWINCH and repaints at the new width. Once the size has SETTLED (no
+       further change for 350ms) ask the server for a full repaint nudge: claude's
+       diff renderer leaves stale cells behind after a big grid change (duplicate
+       status rows, orphaned hint chips) and only a from-scratch re-layout clears
+       them. Never fires mid-drag — every dim change pushes the timer back. */
+    let settleTimer: number | undefined
+    const resizeSub = term.onResize(() => {
+      sendResize()
+      window.clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(() => {
+        if (ws !== null && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'repaint' }))
+        }
+      }, 350)
+    })
 
     /* Mouse-wheel pages claude's history: send PageUp/PageDown to the pty instead
        of xterm's default alt-screen wheel→arrow-keys. Throttled so a trackpad
@@ -466,6 +478,7 @@ export function TerminalPanel({
       refitRef.current = null
       window.clearTimeout(connectTimer)
       window.clearTimeout(resizeTimer)
+      window.clearTimeout(settleTimer)
       window.clearTimeout(modeFlushTimer)
       observer.disconnect()
       container.removeEventListener('contextmenu', handleContextMenu)
