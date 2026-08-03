@@ -340,15 +340,30 @@ function sendToAll(entry, frame) {
  * exactly what would garble the narrower tab). Each socket carries its last
  * grid on __cols/__rows (seeded from the connect query, updated by resize
  * messages); sockets with no known size are ignored.
+ *
+ * Only VISIBLE viewers (foreground browser tabs) constrain the size. A session
+ * left open in a BACKGROUND tab — especially a narrow multi-view pane there —
+ * must not pin the pty narrow for the tab the user is actually looking at; that
+ * left claude rendering at ~90 cols in a full-width single pane, wasting half
+ * the screen. Sockets report their visibility via a `visible` message tied to
+ * document.visibilityState. If no viewer is visible (every tab backgrounded, or
+ * all on the chat sub-view) we fall back to ALL viewers so the size still
+ * tracks something rather than freezing.
  */
 function sizePty(entry) {
   if (entry.exited || !entry.pty) return
-  let cols = null
-  let rows = null
-  for (const sock of entry.sockets) {
-    if (typeof sock.__cols === 'number' && sock.__cols >= 2) cols = cols === null ? sock.__cols : Math.min(cols, sock.__cols)
-    if (typeof sock.__rows === 'number' && sock.__rows >= 2) rows = rows === null ? sock.__rows : Math.min(rows, sock.__rows)
+  const measure = (onlyVisible) => {
+    let cols = null
+    let rows = null
+    for (const sock of entry.sockets) {
+      if (onlyVisible && sock.__visible === false) continue
+      if (typeof sock.__cols === 'number' && sock.__cols >= 2) cols = cols === null ? sock.__cols : Math.min(cols, sock.__cols)
+      if (typeof sock.__rows === 'number' && sock.__rows >= 2) rows = rows === null ? sock.__rows : Math.min(rows, sock.__rows)
+    }
+    return [cols, rows]
   }
+  let [cols, rows] = measure(true)
+  if (cols === null || rows === null) [cols, rows] = measure(false)
   if (cols === null || rows === null) return
   try {
     entry.pty.resize(cols, rows)
@@ -369,6 +384,9 @@ function sizePty(entry) {
 function attachWs(ws, entry, key, cols, rows) {
   ws.__cols = typeof cols === 'number' ? cols : null
   ws.__rows = typeof rows === 'number' ? rows : null
+  // default visible: a fresh connection is assumed on-screen until its first
+  // `visible` message says otherwise (the client sends one right after open).
+  ws.__visible = true
   entry.sockets.add(ws)
   // A viewer is present again — cancel any pending reap from when the last left.
   if (entry.killTimer) {
@@ -401,6 +419,11 @@ function attachWs(ws, entry, key, cols, rows) {
         ws.__rows = r
         sizePty(entry) // resize to the min across all viewers, not just this one
       }
+    } else if (msg.type === 'visible') {
+      // a background tab must not pin the shared pty narrow — only foreground
+      // (visible) viewers count toward the min grid. Re-size on every change.
+      ws.__visible = msg.value !== false
+      sizePty(entry)
     }
   })
 

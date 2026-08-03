@@ -377,6 +377,15 @@ export function TerminalPanel({
           /* container may be mid-layout */
         }
         sendResize()
+        /* tell the server whether this tab is on screen — a backgrounded tab
+           must not pin the shared pty narrow for the tab actually in view */
+        try {
+          socket.send(
+            JSON.stringify({ type: 'visible', value: document.visibilityState === 'visible' }),
+          )
+        } catch {
+          /* socket race */
+        }
         term.focus()
       }
 
@@ -480,6 +489,22 @@ export function TerminalPanel({
     }, 0)
     return () => window.clearTimeout(timer)
   }, [theme])
+
+  /* — tell the server when this browser tab shows/hides. A background tab must
+       not constrain the shared pty's width: the server sizes the pty to the
+       smallest VISIBLE viewer, so a hidden tab (e.g. this session also open in a
+       narrow multi-view pane elsewhere) no longer pins claude narrow for the tab
+       actually on screen. — */
+  useEffect(() => {
+    const onVisibility = () => {
+      const ws = wsRef.current
+      if (ws !== null && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'visible', value: document.visibilityState === 'visible' }))
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [])
 
   /* — surface the connection status upward (live marker) — read the
        callback through a ref so a changing prop identity doesn't re-fire,
