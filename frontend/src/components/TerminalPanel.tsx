@@ -230,7 +230,7 @@ export function TerminalPanel({
   useEffect(() => {
     if (resizeSignal === lastResizeRef.current) return
     lastResizeRef.current = resizeSignal
-    const t = window.setTimeout(() => refitRef.current?.(), 100)
+    const t = window.setTimeout(() => refitRef.current?.(), 30)
     return () => window.clearTimeout(t)
   }, [resizeSignal])
   /* the id this connection actually resumed, for the header strip */
@@ -255,6 +255,7 @@ export function TerminalPanel({
       fontFamily:
         '"Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
       scrollback: 10000,
+      rescaleOverlappingGlyphs: true,
       /* NO convertEol (would add \r before every \n → column resets in claude's
          TUI) and NO tabStopWidth override (claude assumes the standard 8) — both
          desync claude's cursor math from xterm's grid. Manager 26's config. */
@@ -428,20 +429,26 @@ export function TerminalPanel({
     }
     container.addEventListener('contextmenu', handleContextMenu)
 
-    /* re-fit on a real container size change. A 5px threshold ignores sub-cell
-       jitter, and a 100ms debounce coalesces a drag's many frames into one fit
-       at rest (Manager 26) — no mid-drag garble, no proposeDimensions machinery. */
+    /* re-fit on container size change. Large jumps (>30px) fit immediately so the
+       terminal stays readable mid-drag; small changes debounce at 50ms to coalesce
+       jitter. A 3px threshold filters sub-pixel noise. */
     let lastW = container.clientWidth
     let lastH = container.clientHeight
     let resizeTimer: number | undefined
     const observer = new ResizeObserver(() => {
       const w = container.clientWidth
       const h = container.clientHeight
-      if (Math.abs(w - lastW) < 5 && Math.abs(h - lastH) < 5) return
+      const dw = Math.abs(w - lastW)
+      const dh = Math.abs(h - lastH)
+      if (dw < 3 && dh < 3) return
       lastW = w
       lastH = h
       window.clearTimeout(resizeTimer)
-      resizeTimer = window.setTimeout(() => refitRef.current?.(), 100)
+      if (dw > 30 || dh > 30) {
+        refitRef.current?.()
+      } else {
+        resizeTimer = window.setTimeout(() => refitRef.current?.(), 50)
+      }
     })
     observer.observe(container)
 
@@ -584,8 +591,8 @@ export function TerminalPanel({
       )}
 
       {/* — the console — */}
-      <div className="relative min-h-0 flex-1 bg-midnight">
-        <div ref={containerRef} className="absolute inset-0 px-3 py-2" />
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-midnight">
+        <div ref={containerRef} className="absolute inset-0 overflow-hidden px-3 py-2" />
       </div>
 
       {/* — right-click Copy / Cut / Paste menu — */}
