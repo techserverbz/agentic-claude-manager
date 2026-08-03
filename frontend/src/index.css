@@ -358,6 +358,47 @@ textarea:focus-visible {
   }
 }
 
+/* ————————————————— responsive layout ————————————————— */
+
+@media (max-width: 900px) {
+  /* sidebar narrows */
+  aside.w-72 {
+    width: 14rem !important;
+  }
+
+  /* pane minimum shrinks so multi-pane stays usable */
+  .min-w-\[300px\] {
+    min-width: 200px !important;
+  }
+
+  /* tabs shrink */
+  .max-w-\[220px\] {
+    max-width: 160px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  /* sidebar even narrower */
+  aside.w-72 {
+    width: 11rem !important;
+  }
+
+  /* panes shrink further */
+  .min-w-\[300px\] {
+    min-width: 160px !important;
+  }
+
+  /* tabs compact further */
+  .max-w-\[220px\] {
+    max-width: 120px !important;
+  }
+
+  /* canvas minimum shrinks */
+  .min-w-\[280px\] {
+    min-width: 200px !important;
+  }
+}
+
 /* ————————————————— reduced motion ————————————————— */
 
 @media (prefers-reduced-motion: reduce) {
