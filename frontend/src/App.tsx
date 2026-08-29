@@ -10,10 +10,40 @@ import { ConfirmModal } from './components/ConfirmModal'
 import { ProjectDetailsModal } from './components/ProjectDetailsModal'
 import { EditProjectModal } from './components/EditProjectModal'
 import { api } from './lib/api'
-import type { ChatGroup, ComputerSession, GroupChat, GroupDirectory, Project } from './lib/api'
+import type {
+  ChatGroup,
+  ComputerSession,
+  Floor,
+  FloorAgent,
+  GroupChat,
+  GroupDirectory,
+  Project,
+} from './lib/api'
 import { chatSocket } from './lib/chatSocket'
 
-export type MainTab = 'chat' | 'terminals' | 'agents' | 'brain'
+/** the top-level workspace view: the session panes, the agent floor, or workflows */
+export type AppView =
+  | 'sessions'
+  | 'floor'
+  | 'agentsWorkflow'
+  | 'workflows'
+  | 'projectWorkflows'
+  | 'skills'
+  | 'mcp'
+/* the views that may be restored from localStorage. 'sessions' is deliberately
+   absent — it is the fallback, so an unknown/stale stored value lands there. */
+const APP_VIEWS: AppView[] = [
+  'floor',
+  'agentsWorkflow',
+  'workflows',
+  'projectWorkflows',
+  'skills',
+  'mcp',
+]
+function initialAppView(): AppView {
+  const raw = localStorage.getItem('cos-app-view') as AppView | null
+  return raw !== null && APP_VIEWS.includes(raw) ? raw : 'sessions'
+}
 export type Theme = 'light' | 'dark'
 
 /** an open workspace tab — one session (or a not-yet-created 'New' session).
@@ -29,6 +59,12 @@ export interface WorkTab {
   title: string
   /** true = an empty, focusable placeholder slot (no project/session bound) */
   empty?: boolean
+  /** what this tab shows. Absent = 'session', so tabs saved before floors
+      existed still load. A 'floor' tab renders the org-chart designer and
+      ignores projectId/sessionId. */
+  kind?: 'session' | 'floor'
+  /** the floor this tab shows, when kind === 'floor' */
+  floorId?: string
 }
 
 /* Dark mode is the default; a stored preference (set by the theme toggle) wins.
@@ -59,7 +95,7 @@ function initialPaneMode(): PaneMode {
 /** how many panes when multi (2–6) — persisted under 'cos-window-count' */
 function initialWindowCount(): number {
   const raw = Number(localStorage.getItem('cos-window-count'))
-  return Number.isFinite(raw) && raw >= 2 && raw <= 6 ? Math.floor(raw) : 2
+  return Number.isFinite(raw) && raw >= 2 && raw <= 12 ? Math.floor(raw) : 2
 }
 
 /** a saved VIEW — a named snapshot of the whole multipane layout (how many
@@ -79,6 +115,11 @@ export interface SavedView {
   canvasFile: string | null
   /** 'full' = canvas only, 'split' = canvas beside the chat panes */
   canvasLayout: CanvasLayout
+  /** which agent sits in which window on the agent-workflow grid, as
+   *  "<floorId>:<agentId>" per slot. Optional: absent on every view saved
+   *  before this existed, and null means "this view says nothing about the
+   *  agent grid" rather than "empty every window". */
+  agentSlots?: (string | null)[] | null
 }
 /* validate an untrusted array of views (from the server) into SavedView[] */
 function coerceViews(parsed: unknown): SavedView[] {
@@ -116,7 +157,11 @@ function loadSavedTabs(): { tabs: WorkTab[]; activeKey: string | null } {
       )
       /* normalise the empty flag to a strict boolean (it persists so the slot
          layout — which windows are blank — restores on reload) */
-      .map((t) => ({ ...t, empty: (t as WorkTab).empty === true }))
+      .map((t) => ({
+        ...t,
+        empty: (t as WorkTab).empty === true,
+        kind: (t as WorkTab).kind === 'floor' ? ('floor' as const) : ('session' as const),
+      }))
     const activeKeyRaw = (parsed as { activeKey?: unknown }).activeKey
     const activeKey = typeof activeKeyRaw === 'string' ? activeKeyRaw : null
     return { tabs, activeKey }
@@ -175,6 +220,25 @@ export default function App() {
      directory-projects above, which now only serve cwd→pty resolution. */
   const [groups, setGroups] = useState<ChatGroup[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  /* which WORKFLOW project the Project Workflows view is standing in. A second
+     selection rather than a reuse of selectedProjectId: the two lists are
+     separate on purpose, and sharing one cursor would make leaving the workflow
+     view re-point the ordinary Projects list at a project it does not contain. */
+  const [selectedWorkflowProjectId, setSelectedWorkflowProjectId] = useState<string | null>(null)
+  /* which agent's chat the Agent WF view is showing. Owned here because the
+     SIDEBAR lists the agents and the PANEL renders the chosen one — neither can
+     own a choice the other has to read. */
+  const [agentSel, setAgentSel] = useState<{ floorId: string; agentId: string } | null>(null)
+  /* Bumped only when a selection ASKS for the chat. The panel watches it and
+     opens the chat on a change — so clicking a name in the sidebar lands you in
+     the conversation, while the panel's own internal selections (a desk on the
+     canvas, a row in the roster) do not spawn anything behind your back. */
+  const [openChatNonce, setOpenChatNonce] = useState(0)
+  const handleSelectAgent = (floorId: string, agentId: string, openChat = false) => {
+    if (!floorId || !agentId) return
+    setAgentSel({ floorId, agentId })
+    if (openChat) setOpenChatNonce((n) => n + 1)
+  }
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   /* non-null = the project modal is open in EDIT mode for this id */
   const [editProjectId, setEditProjectId] = useState<string | null>(null)
@@ -297,6 +361,218 @@ export default function App() {
   const [activeTabKey, setActiveTabKey] = useState<string | null>(null)
   const [paneMode, setPaneMode] = useState<PaneMode>(initialPaneMode)
   const [windowCount, setWindowCount] = useState<number>(initialWindowCount)
+  /* Which agent is in which window on the agent-workflow grid. Owned HERE
+     rather than inside the grid so a saved view can capture and restore it —
+     the view handlers live in this file and cannot reach a child's state. */
+  const [agentSlots, setAgentSlots] = useState<(string | null)[]>([])
+  /* the top-level view — the session panes (default), the agent floor, or the
+     workflows shell. Lives here, not in Workspace, because the SIDEBAR owns the
+     buttons that switch it while the WORKSPACE owns what it renders. */
+  const [appView, setAppView] = useState<AppView>(initialAppView)
+
+  /* — FLOORS: org charts of agent roles. Persisted server-side (server/data/
+       floors.json) like the views, not in localStorage, so they live beside the
+       projects and survive a cache clear. — */
+  const [floors, setFloors] = useState<Floor[]>([])
+  useEffect(() => {
+    let cancelled = false
+    api
+      .getFloors()
+      .then((list) => {
+        if (!cancelled) setFloors(list)
+      })
+      .catch(() => {
+        /* server unreachable — an empty list; Add floor retries the call */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /* Open a floor as its own workspace tab, so it sits BESIDE the session tabs
+     and can be split-paned against a live terminal. An empty slot is filled in
+     place; otherwise the floor is appended, because replacing the focused slot
+     would evict a session tab the user is watching. */
+  const handleOpenFloor = (floor: Floor) => {
+    if (canvasLayout !== 'split') setCanvasFile(null)
+    const existing = openTabs.find((t) => t.kind === 'floor' && t.floorId === floor.id)
+    if (existing !== undefined) {
+      setActiveTabKey(existing.key)
+      return
+    }
+    const tab: WorkTab = {
+      key: nextTabKey(),
+      projectId: '',
+      sessionId: null,
+      title: floor.name,
+      empty: false,
+      kind: 'floor',
+      floorId: floor.id,
+    }
+    const activeIndex = openTabs.findIndex((t) => t.key === activeTabKey)
+    const focusedIsBlank = activeIndex !== -1 && openTabs[activeIndex].empty === true
+    setOpenTabs((prev) =>
+      focusedIsBlank ? prev.map((t, i) => (i === activeIndex ? tab : t)) : [...prev, tab],
+    )
+    setActiveTabKey(tab.key)
+  }
+
+  const handleAddFloor = async (kind: Floor['kind'] = 'agents') => {
+    try {
+      // The kind comes from the view that asked, so a floor added on the Agents
+      // Workflow canvas cannot land in the Agents list and vanish.
+      const floor = await api.createFloor('New floor', kind)
+      setFloors((f) => [floor, ...f])
+      handleOpenFloor(floor)
+    } catch {
+      /* creation failed — nothing was added, so there is nothing to roll back */
+    }
+  }
+
+  /* Open an agent's chat, then re-read the floors so the new binding is visible.
+     The sessionId is minted SERVER-side (it spawns the pty), so patching the
+     local array from the response would be guessing at what the store wrote —
+     and a second click would then spawn a duplicate claude for the same agent. */
+  /* The project an agent chat will actually cwd into.
+     ONE value, used by both the panel's gate and the spawn. They were computed
+     separately before: the spawn fell back to the first real project while the
+     gate read the raw selection, so the panel refused to open a chat it was
+     perfectly able to open — and selectedProjectId is only ever set by OPENING
+     a session, which you never do in the Agent WF view. */
+  const agentChatProjectId =
+    selectedProjectId ?? projects.find((p) => !p.ephemeral)?.id ?? null
+
+  const handleOpenAgentChat = async (floorId: string, agentId: string) => {
+    const projectId = agentChatProjectId
+    if (projectId === null) return
+    try {
+      await api.openAgentChat(floorId, agentId, projectId)
+      const list = await api.getFloors()
+      setFloors(list)
+    } catch {
+      /* the panel keeps its empty state; the button stays available to retry */
+    }
+  }
+
+  /* Attach a floor to a CRM scope. The server is the source of truth for the
+     stored value, so re-read rather than patching the local array — the same
+     reason handleOpenAgentChat re-fetches. */
+  const handleAttachScope = async (
+    floorId: string,
+    crmScope: { targetType: string; targetId: string | null },
+  ) => {
+    /* Deliberately NOT caught here. Attaching is write-once, so a silent
+       failure would leave the user clicking a control that appears to do
+       nothing. The dialog that called this shows the reason and stays open. */
+    await api.attachFloorScope(floorId, crmScope)
+    setFloors(await api.getFloors())
+  }
+
+  /* Rename a floor. Optimistic: the name is a display string with no invariant
+     behind it, so showing it immediately and reverting on failure beats making
+     the user wait on a round-trip to see their own typing. */
+  /* The floor preamble. Optimistic like the rename above, but it RESOLVES:
+     the editor debounces on it and shows Saved/failed, so it must not
+     swallow the error. */
+  /* A workspace changes BOTH stores — the floor gains its binding and a new
+     project appears — so both are re-read rather than patched by hand. */
+  const handleRefreshFloors = () => {
+    void api.getFloors().then(setFloors, () => {})
+    void api.getProjects().then(setProjects, () => {})
+  }
+
+  const handleSetFloorPrompt = async (id: string, globalPrompt: string) => {
+    const before = floors.find((f) => f.id === id)?.globalPrompt
+    setFloors((prev) => prev.map((f) => (f.id === id ? { ...f, globalPrompt } : f)))
+    try {
+      await api.updateFloor(id, { globalPrompt })
+    } catch (err) {
+      setFloors((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, globalPrompt: before ?? '' } : f)),
+      )
+      throw err
+    }
+  }
+
+  const handleRenameFloor = async (id: string, name: string) => {
+    const before = floors.find((f) => f.id === id)?.name
+    setFloors((prev) => prev.map((f) => (f.id === id ? { ...f, name } : f)))
+    /* An open tab caches the name it was created with, so a rename that did not
+       reach it would leave the tab reading the old one until the app restarts. */
+    setOpenTabs((tabs) =>
+      tabs.map((t) => (t.kind === 'floor' && t.floorId === id ? { ...t, title: name } : t)),
+    )
+    try {
+      await api.updateFloor(id, { name })
+    } catch {
+      if (before !== undefined) {
+        setFloors((prev) => prev.map((f) => (f.id === id ? { ...f, name: before } : f)))
+        setOpenTabs((tabs) =>
+          tabs.map((t) => (t.kind === 'floor' && t.floorId === id ? { ...t, title: before } : t)),
+        )
+      }
+    }
+  }
+
+  /* Edit one agent from anywhere — the grid's right-click, the canvas.
+     Optimistic: the modal edits as you type, and waiting on a round trip
+     per keystroke would make the brief field unusable. A refused write
+     rolls the floor back. */
+  const handlePatchAgent = async (
+    floorId: string,
+    agentId: string,
+    patch: Partial<FloorAgent>,
+  ) => {
+    const before = floors
+    const next = floors.map((f) =>
+      f.id === floorId
+        ? { ...f, agents: f.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)) }
+        : f,
+    )
+    setFloors(next)
+    const floor = next.find((f) => f.id === floorId)
+    if (!floor) return
+    try {
+      await api.updateFloor(floorId, { agents: floor.agents })
+    } catch {
+      setFloors(before)
+    }
+  }
+
+  const handleRemoveAgent = async (floorId: string, agentId: string) => {
+    const before = floors
+    const next = floors.map((f) =>
+      f.id === floorId
+        ? {
+            ...f,
+            agents: f.agents
+              .filter((a) => a.id !== agentId)
+              /* anyone reporting to the removed agent floats up to the top,
+                 which is what the server would repair to anyway */
+              .map((a) => (a.reportsTo === agentId ? { ...a, reportsTo: null } : a)),
+          }
+        : f,
+    )
+    setFloors(next)
+    const floor = next.find((f) => f.id === floorId)
+    if (!floor) return
+    try {
+      await api.updateFloor(floorId, { agents: floor.agents })
+    } catch {
+      setFloors(before)
+    }
+  }
+
+  const handleDeleteFloor = async (id: string) => {
+    try {
+      await api.deleteFloor(id)
+    } catch {
+      return /* leave the sidebar alone if the server refused */
+    }
+    setFloors((f) => f.filter((x) => x.id !== id))
+    /* close any tab showing it — a tab pointing at a deleted floor renders nothing */
+    setOpenTabs((tabs) => tabs.map((t) => (t.floorId === id ? makeEmptyTab() : t)))
+  }
   /* saved layouts (named views) — persisted on this computer (server/data/
      views.json), not the browser, so they survive a cache clear / browser swap
      and live alongside the projects. */
@@ -399,6 +675,10 @@ export default function App() {
     localStorage.setItem('cos-window-count', String(windowCount))
   }, [windowCount])
 
+  useEffect(() => {
+    localStorage.setItem('cos-app-view', appView)
+  }, [appView])
+
   const refreshProjects = useCallback(async () => {
     try {
       setProjects(await api.getProjects())
@@ -424,7 +704,7 @@ export default function App() {
   const handleNewGroup = async (chat?: { sessionId: string; cwd: string }) => {
     let group: ChatGroup
     try {
-      group = await api.createGroup('New project')
+      group = await api.createGroup('New group')
     } catch {
       return
     }
@@ -438,6 +718,24 @@ export default function App() {
         /* group still exists, just empty */
       }
     }
+  }
+  /* The two lists come out of ONE fetch and are split by kind here. A second
+     request per kind would double the round-trips and let the halves disagree
+     after an edit — every mutation handler below already patches `groups`. */
+  const workflowProjects = useMemo(() => groups.filter((g) => g.kind === 'workflow'), [groups])
+
+  /* Separate from handleNewGroup, not a flag on it: an ordinary project and a
+     workflow project are created from different places, land in different
+     lists, and only this one has a selection to move. */
+  const handleNewWorkflowProject = async () => {
+    let group: ChatGroup
+    try {
+      group = await api.createGroup('New workflow project', 'workflow')
+    } catch {
+      return
+    }
+    setGroups((prev) => [...prev, group])
+    setSelectedWorkflowProjectId(group.id)
   }
   const handleRenameGroup = async (id: string, name: string) => {
     if (!name.trim()) return
@@ -465,6 +763,12 @@ export default function App() {
     } catch {
       /* ignore */
     }
+  }
+  /* deleting the workflow project you are standing in must also step off it —
+     otherwise the panel keeps asking for a group the server no longer has */
+  const handleDeleteWorkflowProject = async (id: string) => {
+    await handleDeleteGroup(id)
+    setSelectedWorkflowProjectId((cur) => (cur === id ? null : cur))
   }
   /* edit a Project's metadata (name / reference directory / description / color) */
   const handleUpdateGroup = async (
@@ -1013,7 +1317,7 @@ export default function App() {
         setGroups((g) => g.map((x) => (x.id === group.id ? group : x)))
       })
       .catch((err) => {
-        console.error('[claude-manager] fallback addChatToGroup failed:', err)
+        console.error('[munder-difflin-v2] fallback addChatToGroup failed:', err)
       })
     setOpenTabs((prev) =>
       prev.map((t) =>
@@ -1042,6 +1346,12 @@ export default function App() {
       /* directory may have been moved/deleted — nothing to open */
     }
   }
+
+  /* A workflow run's sessions (the father, and one per dispatched step) used to
+     open through handleOpenGroupChat, which put them in the main tab strip and
+     left the user hunting for them among ordinary chats. They now open in an
+     embedded pane inside ProjectWorkflowsPanel, so there is no run-session route
+     out of that view at all — the deletion is the fix, not an omission. */
 
   /* new chat — a fresh 'New' tab (sessionId null) for the selected project.
      single: append + focus (the strip switches among reals).
@@ -1150,6 +1460,7 @@ export default function App() {
         activeKey: activeTabKey,
         canvasFile,
         canvasLayout,
+        agentSlots,
       },
     ])
   }
@@ -1163,12 +1474,17 @@ export default function App() {
     // restore the canvas paired with this view (null clears it)
     setCanvasFile(view.canvasFile ?? null)
     setCanvasLayout(view.canvasLayout === 'split' ? 'split' : 'full')
+    /* Only when the view actually carries them. A view saved before this
+       existed says nothing about the agent grid, and blanking every window
+       would be a worse answer than leaving it as the user had it. The grid
+       drops any agent that no longer exists when it applies these. */
+    if (Array.isArray(view.agentSlots)) setAgentSlots(view.agentSlots)
   }
   const handleUpdateView = (id: string) => {
     setViews((prev) =>
       prev.map((v) =>
         v.id === id
-          ? { ...v, paneMode, windowCount, tabs: openTabs, activeKey: activeTabKey, canvasFile, canvasLayout }
+          ? { ...v, paneMode, windowCount, tabs: openTabs, activeKey: activeTabKey, canvasFile, canvasLayout, agentSlots }
           : v,
       ),
     )
@@ -1309,7 +1625,7 @@ export default function App() {
           setGroups((g) => g.map((x) => (x.id === group.id ? group : x)))
         })
         .catch((err) => {
-          console.error('[claude-manager] addChatToGroup failed:', err)
+          console.error('[munder-difflin-v2] addChatToGroup failed:', err)
         })
     }
     setOpenTabs((prev) =>
@@ -1418,6 +1734,23 @@ export default function App() {
           onDefaultViewChange={setDefaultView}
           canvasFile={canvasFile}
           onOpenCanvas={(name) => setCanvasFile(name)}
+          appView={appView}
+          onSetAppView={setAppView}
+          workflowProjects={workflowProjects}
+          selectedWorkflowProjectId={selectedWorkflowProjectId}
+          onSelectWorkflowProject={setSelectedWorkflowProjectId}
+          onNewWorkflowProject={handleNewWorkflowProject}
+          onRenameWorkflowProject={handleRenameGroup}
+          onDeleteWorkflowProject={handleDeleteWorkflowProject}
+          floors={floors}
+          selFloorId={agentSel?.floorId ?? null}
+          selAgentId={agentSel?.agentId ?? null}
+          onSelectAgent={handleSelectAgent}
+          onRenameFloor={handleRenameFloor}
+          onAttachFloorScope={handleAttachScope}
+          onAddFloor={handleAddFloor}
+          onOpenFloor={handleOpenFloor}
+          onDeleteFloor={handleDeleteFloor}
         />
         <div ref={splitWrapRef} className="relative flex min-w-0 flex-1">
         <Workspace
@@ -1449,6 +1782,23 @@ export default function App() {
           onActiveSessionsChange={handleActiveSessionsChange}
           onNewProject={() => setNewProjectOpen(true)}
           canvasSplit={canvasFile !== null && canvasLayout === 'split'}
+          appView={appView}
+          onSetAppView={setAppView}
+          selectedWorkflowProjectId={selectedWorkflowProjectId}
+          floors={floors}
+          onOpenAgentChat={handleOpenAgentChat}
+          onAttachScope={handleAttachScope}
+          selectedProjectId={agentChatProjectId}
+          selFloorId={agentSel?.floorId ?? null}
+          selAgentId={agentSel?.agentId ?? null}
+          onSelectAgent={handleSelectAgent}
+          openChatSignal={openChatNonce}
+          agentSlots={agentSlots}
+          onAgentSlotsChange={setAgentSlots}
+          onPatchAgent={handlePatchAgent}
+          onRemoveAgent={handleRemoveAgent}
+          onSetFloorPrompt={handleSetFloorPrompt}
+          onRefreshFloors={handleRefreshFloors}
         />
         {canvasFile !== null && canvasLayout === 'split' && (
           <div
@@ -1502,7 +1852,7 @@ export default function App() {
               key={canvasFile}
               ref={canvasIframeRef}
               onLoad={postCanvasTheme}
-              src={`http://localhost:5111/${encodeURIComponent(canvasFile)}`}
+              src={`http://localhost:5811/${encodeURIComponent(canvasFile)}`}
               title="Excalidraw canvas"
               className={`min-h-0 w-full flex-1 border-0 bg-white ${canvasResizing ? 'pointer-events-none' : ''}`}
             />

@@ -31,6 +31,12 @@ function hydrateTab(t) {
     sessionId: typeof t.sessionId === 'string' ? t.sessionId : null,
     title: typeof t.title === 'string' ? t.title : '',
     empty: t.empty === true,
+    /* A floor tab carried neither of these through a save: the whitelist above
+       dropped them, so a saved view's floor tab came back as a session tab
+       pointing at an empty projectId. Same class of bug as agentSlots, already
+       live before this change. */
+    kind: t.kind === 'floor' ? 'floor' : 'session',
+    floorId: typeof t.floorId === 'string' ? t.floorId : undefined,
   }
 }
 
@@ -43,12 +49,21 @@ function hydrateView(v) {
     id: v.id,
     name: v.name,
     paneMode: v.paneMode === 'multi' ? 'multi' : 'single',
-    windowCount: Number.isFinite(windowCount) && windowCount >= 2 && windowCount <= 6 ? Math.floor(windowCount) : 2,
+    windowCount: Number.isFinite(windowCount) && windowCount >= 2 && windowCount <= 12 ? Math.floor(windowCount) : 2,
     tabs: v.tabs.map(hydrateTab).filter(Boolean),
     activeKey: typeof v.activeKey === 'string' ? v.activeKey : null,
     // the Excalidraw canvas paired with this view (null = none) + its layout
     canvasFile: typeof v.canvasFile === 'string' ? v.canvasFile : null,
     canvasLayout: v.canvasLayout === 'split' ? 'split' : 'full',
+    /* WHICH AGENT IS IN WHICH WINDOW, on the agent-workflow grid. Rebuilt here
+       rather than passed through, because this function constructs a NEW object
+       from a whitelist — a field that is not named here never reaches disk, and
+       the client discards the response, so the loss only shows after a reload.
+       null (not []) when absent, so "saved before this existed" stays tellable
+       from "saved with every window deliberately empty". */
+    agentSlots: Array.isArray(v.agentSlots)
+      ? v.agentSlots.map((k) => (typeof k === 'string' ? k : null))
+      : null,
   }
 }
 

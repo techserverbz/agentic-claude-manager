@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import type { ChatMessage, Project, ToolUse } from '../lib/api'
 import { chatSocket } from '../lib/chatSocket'
@@ -146,6 +146,11 @@ export function ChatPanel({
      recomputed per render), so auto-follow only happens when they're already at
      the bottom — scrolling up to read is never yanked back down. */
   const pinnedToBottomRef = useRef(true)
+  /* true for exactly one scroll event: the one WE just caused. The browser
+     fires scroll for a programmatic scrollTop write just as it does for a
+     gesture, and treating that as the user arriving at the foot re-pinned the
+     view they had deliberately scrolled away from. */
+  const programmaticRef = useRef(false)
 
   projectIdRef.current = project.id
   sessionIdRef.current = sessionId
@@ -264,31 +269,64 @@ export function ChatPanel({
     const el = scrollRef.current
     if (el === null) return
     const onScroll = () => {
+      /* a scroll WE caused is not the user changing their mind — without
+         this, every jump-to-latest re-pins the view the user just left. */
+      if (programmaticRef.current) {
+        programmaticRef.current = false
+        return
+      }
       pinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
     }
+    /* INTENT, not distance. The 80px test above cannot tell "scrolled up to
+       read" from "still at the foot", so a nudge smaller than 80px was undone
+       by the next poll — which is what "scroll sometimes does not work" was.
+       An upward gesture unpins immediately, however small; coming back to the
+       foot re-pins through onScroll as before. */
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        pinnedToBottomRef.current = false
+        scrollBottomPendingRef.current = false
+      }
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
+    el.addEventListener('wheel', onWheel, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+    }
   }, [])
 
   /* — scroll: open on the latest message (foot) on first load / becoming visible /
        session change; otherwise follow the foot only while the user is pinned
        there. Scrolling up to read history is never interrupted. — */
-  useEffect(() => {
+  /* Spent on the SAME commit that arms it. Keyed on [messages] alone, the
+     pending jump could sit armed for minutes — loadMessages returns the very
+     same array when nothing changed, so no re-render, so this never ran — and
+     then fire on some later poll, yanking the reader to the foot long after
+     they had scrolled up. `active` and `sessionId` are the two things that arm
+     it, so they belong in the deps. */
+  useLayoutEffect(() => {
     const el = scrollRef.current
     if (el === null) return
+    const jump = () => {
+      const e2 = scrollRef.current
+      if (e2 === null) return
+      programmaticRef.current = true
+      e2.scrollTop = e2.scrollHeight
+    }
     if (scrollBottomPendingRef.current) {
       scrollBottomPendingRef.current = false
       pinnedToBottomRef.current = true
-      el.scrollTop = el.scrollHeight
-      /* a late layout pass (font/wrap settle) can grow the height a frame later */
-      requestAnimationFrame(() => {
-        const e2 = scrollRef.current
-        if (e2 !== null) e2.scrollTop = e2.scrollHeight
+      jump()
+      /* a late layout pass (font/wrap settle) can grow the height a frame
+         later — but only chase it if they have not scrolled away since */
+      const raf = requestAnimationFrame(() => {
+        if (pinnedToBottomRef.current) jump()
       })
-      return
+      return () => cancelAnimationFrame(raf)
     }
-    if (pinnedToBottomRef.current) el.scrollTop = el.scrollHeight
-  }, [messages])
+    if (pinnedToBottomRef.current) jump()
+  }, [messages, active, sessionId])
 
   const shortSession = sessionId !== null ? sessionId.slice(0, 8) : 'NEW'
   const isEmpty = messages.length === 0
@@ -315,7 +353,13 @@ export function ChatPanel({
       )}
 
       {/* — message log (read-only) — */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+      {/* overscroll-contain: at the top or bottom of the log the gesture used
+          to chain to the horizontal window strip behind it, which then ate the
+          rest of the flick. The chat keeps its own scroll. */}
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6"
+      >
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <span aria-hidden="true" className="text-brass">

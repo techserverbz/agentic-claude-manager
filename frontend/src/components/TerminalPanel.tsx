@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { ClipboardPaste, Copy, RotateCcw, Scissors } from 'lucide-react'
 import type { Project } from '../lib/api'
 import type { Theme } from '../App'
+
 import '@xterm/xterm/css/xterm.css'
 
 /**
@@ -304,18 +305,56 @@ export function TerminalPanel({
       }, 350)
     })
 
-    /* Mouse-wheel pages claude's history: send PageUp/PageDown to the pty instead
-       of xterm's default alt-screen wheel→arrow-keys. Throttled so a trackpad
-       flick doesn't fly through pages. Always returns false → xterm never sends
-       its own arrows. */
-    let lastWheelAt = 0
+    /* THE WHEEL. Who scrolls depends on which buffer the pty is showing, and
+       getting that wrong is why scrolling "sometimes" did nothing:
+
+         · ALTERNATE buffer (claude's full-screen TUI) — there IS no xterm
+           scrollback to move (xterm gives the alt buffer none), so the only
+           way back through history is to page the app itself. Send
+           PageUp/PageDown and return false. Returning true here would ALSO
+           make xterm emit its own arrow keys, doubling the input.
+
+         · NORMAL buffer — the output lives in xterm's own 10,000-line
+           scrollback, and paging the app does nothing but inject keys into
+           claude's parser. Return true and let xterm scroll itself.
+
+       Same for a socket that is not open: a terminal whose pty has exited
+       still has all of its output on screen, and it must stay readable.
+
+       Paging is ACCUMULATED rather than throttled. The old 100ms gate let
+       the first event of any gesture through and dropped the rest, so the
+       smallest nudge jumped a whole page while a flick fired ten a second.
+       Summing the deltas instead makes the distance scrolled match the
+       distance your fingers moved, and the remainder carries so slow
+       scrolling accumulates instead of being thrown away. */
+    let wheelPixels = 0
     term.attachCustomWheelEventHandler((e) => {
-      if (ws === null || ws.readyState !== WebSocket.OPEN) return false
-      const now = e.timeStamp
-      if (now - lastWheelAt < 100) return false
-      lastWheelAt = now
-      const key = e.deltaY < 0 ? '\x1b[5~' : '\x1b[6~' // PageUp : PageDown
-      ws.send(JSON.stringify({ type: 'input', data: key }))
+      /* horizontal and shift-wheel are not ours — xterm reads shift-wheel as
+         a fast scroll, and a sideways swipe has deltaY 0, which the old sign
+         test read as "down" and paged on. */
+      if (e.deltaY === 0 || e.shiftKey) return true
+      if (term.buffer.active.type !== 'alternate') return true
+      if (ws === null || ws.readyState !== WebSocket.OPEN) return true
+
+      /* deltaMode: 0 pixels, 1 lines, 2 pages. Normalise to pixels the way
+         xterm's own viewport does, measuring a row off the live terminal
+         rather than assuming a font size. */
+      const viewportPx = container.clientHeight || term.rows * 16
+      const rowPx = Math.max(1, viewportPx / Math.max(1, term.rows))
+      const pagePx = Math.max(rowPx, viewportPx)
+      wheelPixels +=
+        e.deltaMode === 1 ? e.deltaY * rowPx : e.deltaMode === 2 ? e.deltaY * pagePx : e.deltaY
+
+      /* one key per HALF a screen — a full page per notch overshoots badly
+         on a trackpad, and this still reaches the top of a long log fast. */
+      const step = Math.max(1, Math.round(pagePx / 2))
+      const pages = Math.trunc(wheelPixels / step)
+      if (pages === 0) return false
+      wheelPixels -= pages * step
+      /* cap one gesture so inertia cannot fire a hundred pages at the app */
+      const count = Math.min(Math.abs(pages), 4)
+      const key = pages < 0 ? '\x1b[5~' : '\x1b[6~' // PageUp : PageDown
+      ws.send(JSON.stringify({ type: 'input', data: key.repeat(count) }))
       return false
     })
 
@@ -446,6 +485,10 @@ export function TerminalPanel({
        has something to copy. The actions run from render scope (handleCopy etc). */
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault()
+      /* and stop it reaching React's root listener — a parent that also
+         handles contextmenu would otherwise stack a second menu on this
+         one. Over a terminal, Copy and Paste are the menu. */
+      e.stopPropagation()
       setCtxMenu({ x: e.clientX, y: e.clientY, hasSelection: term.hasSelection() })
     }
     container.addEventListener('contextmenu', handleContextMenu)
@@ -671,6 +714,7 @@ export function TerminalPanel({
             <ClipboardPaste className="h-3 w-3" aria-hidden="true" />
             Paste
           </button>
+
         </div>
       )}
     </div>

@@ -40,10 +40,15 @@ function toolSummary(input: unknown): string {
 
 export function ChatContentModal({
   target,
+  load,
   onClose,
 }: {
   /** null = closed; otherwise the chat to preview */
   target: { sessionId: string; cwd: string; title: string } | null
+  /** where to read the transcript from. Defaults to the global .claude,
+   *  which is right for every chat EXCEPT one on a floor that carries its
+   *  own config folder — those live under the workspace instead. */
+  load?: () => Promise<ChatMessage[]>
   onClose: () => void
 }) {
   const open = target !== null
@@ -61,8 +66,8 @@ export function ChatContentModal({
     setError(null)
     setQuery('')
     let cancelled = false
-    api
-      .getMessagesByCwd(target.cwd, target.sessionId)
+    const read = load ?? (() => api.getMessagesByCwd(target.cwd, target.sessionId))
+    read()
       .then((m) => {
         if (!cancelled) setMessages(m)
       })

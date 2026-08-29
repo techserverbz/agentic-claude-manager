@@ -6,8 +6,8 @@
 
 set -e
 
-API_PORT=4111
-VITE_PORT=5111
+API_PORT=4811
+VITE_PORT=5811
 
 echo "=== Excalidraw Canvas Startup ==="
 echo "API port: $API_PORT | Vite port: $VITE_PORT"

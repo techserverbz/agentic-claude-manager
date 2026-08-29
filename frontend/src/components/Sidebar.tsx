@@ -9,7 +9,9 @@ import {
   FolderOpen,
   FolderGit2,
   FolderInput,
+  FolderKanban,
   FolderSearch,
+  Link2,
   Hash,
   Info,
   Laptop,
@@ -25,15 +27,20 @@ import {
   Settings,
   SlidersHorizontal,
   Terminal as TerminalIcon,
+  Plug,
+  Sparkles,
   Trash2,
+  Users,
+  Workflow,
   X,
 } from 'lucide-react'
+import { ScopePicker, type Scope } from './ScopePicker'
 import { SidebarRow } from './SidebarRow'
 import { ChatContentModal } from './ChatContentModal'
 import { FolderPicker } from './FolderPicker'
 import { CanvasFilesPanel } from './CanvasFilesPanel'
 import { api, relativeTime } from '../lib/api'
-import type { CanvasFile, ChatGroup, ComputerSession, GroupChat, PortInfo, Project, UpdateCheck } from '../lib/api'
+import type { CanvasFile, ChatGroup, ComputerSession, Floor, GroupChat, PortInfo, Project, UpdateCheck } from '../lib/api'
 
 /** "…\Desktop\trying2" — last two path segments, for compact cwd display */
 function shortPath(p: string): string {
@@ -81,7 +88,7 @@ function groupByDir(sessions: ComputerSession[] | null): DirGroup[] {
     a.lastActive < b.lastActive ? 1 : a.lastActive > b.lastActive ? -1 : 0,
   )
 }
-import type { DefaultView } from '../App'
+import type { AppView, DefaultView } from '../App'
 
 /**
  * Sidebar — the observatory's index cabinet.
@@ -100,6 +107,22 @@ const itemVariants: Variants = {
   hidden: { opacity: 0, y: 10 },
   show: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.2, 0.6, 0.2, 1] } },
 }
+
+/**
+ * The ordinary-projects half of the group list.
+ *
+ * Workflow-projects are a SEPARATE list: the chats a run spawns (the father and
+ * one per step) belong to them, and those terminals are private to the Project
+ * Workflows view. Letting one into the Projects list would put a run's plumbing
+ * next to the user's real work and, worse, hand it a workspace tab.
+ *
+ * The test is "not a workflow" rather than "is a project" on purpose: groups
+ * written before the kind split carry no kind at all, and a stale response held
+ * from a server that predates it would otherwise vanish every project on screen.
+ * Defaulting the unknown to 'project' is the same call the server's hydrate
+ * makes, and it fails in the harmless direction.
+ */
+const isProjectGroup = (g: ChatGroup) => g.kind !== 'workflow'
 
 export function Sidebar({
   projects,
@@ -141,6 +164,23 @@ export function Sidebar({
   onDefaultViewChange,
   canvasFile,
   onOpenCanvas,
+  appView,
+  onSetAppView,
+  floors,
+  selFloorId,
+  selAgentId,
+  onSelectAgent,
+  onRenameFloor,
+  onAttachFloorScope,
+  onAddFloor,
+  onOpenFloor,
+  onDeleteFloor,
+  workflowProjects,
+  selectedWorkflowProjectId,
+  onSelectWorkflowProject,
+  onNewWorkflowProject,
+  onRenameWorkflowProject,
+  onDeleteWorkflowProject,
 }: {
   projects: Project[]
   selectedProjectId: string | null
@@ -219,10 +259,45 @@ export function Sidebar({
   canvasFile: string | null
   /** open an Excalidraw canvas file in the main area */
   onOpenCanvas: (name: string) => void
+  /** the top-level MAIN-PANE view. Unlike the four tabs above, these do not
+      change what the sidebar lists — they swap what the workspace renders. */
+  appView: AppView
+  onSetAppView: (v: AppView) => void
+  /** org charts of agent roles — listed here in place of the projects */
+  floors: Floor[]
+  /* the agent the Agent WF view is showing. The sidebar LISTS the agents, so
+     it needs to mark the current one; App owns the value. */
+  selFloorId: string | null
+  selAgentId: string | null
+  onSelectAgent: (floorId: string, agentId: string, openChat?: boolean) => void
+  /** rename a floor — the name is the only freely editable thing about one */
+  onRenameFloor: (floorId: string, name: string) => void
+  /** attach a floor to a CRM scope — write-once, enforced server-side */
+  onAttachFloorScope: (
+    floorId: string,
+    scope: { targetType: string; targetId: string | null },
+  ) => Promise<void>
+  onAddFloor: (kind: 'agents' | 'workflow') => void
+  onOpenFloor: (floor: Floor) => void
+  onDeleteFloor: (id: string) => void
+  /** the groups with kind 'workflow' — listed here in place of the projects
+      while Project Workflows is the view, exactly as floors are for the floor.
+      Already filtered by the parent; this component does not re-filter it. */
+  workflowProjects: ChatGroup[]
+  selectedWorkflowProjectId: string | null
+  /** null deselects — picking the selected one again clears the right pane */
+  onSelectWorkflowProject: (id: string | null) => void
+  onNewWorkflowProject: () => void
+  onRenameWorkflowProject: (id: string, name: string) => void
+  onDeleteWorkflowProject: (id: string) => void
 }) {
   const activeSet = new Set(activeSessions)
   // hidden "loose" projects never appear in the sidebar Projects list
   const visibleProjects = projects.filter((p) => !p.ephemeral)
+  /* every LISTING of groups in this file reads this, never `groups` — see
+     isProjectGroup. Lookups by id stay on the full array: they resolve a row
+     the user already picked, so narrowing them would only make them fail. */
+  const projectGroups = groups.filter(isProjectGroup)
 
   /* — three tabs over the session index —
        Projects: registered projects (directory-derived chats)
@@ -230,6 +305,31 @@ export function Sidebar({
        Recent: a flat, newest-first list of every session on the machine
      The global index (Directories + Recent) is lazy-loaded on first open. */
   const [tab, setTab] = useState<'projects' | 'directories' | 'recent' | 'canvas'>('projects')
+  /* which agent-workflow floors are disclosed. Expanded ids, the same way
+     expandedGroups works, so the two lists behave identically. */
+  const [expandedFloors, setExpandedFloors] = useState<Set<string>>(() => new Set())
+  /* The floor waiting to be attached, plus the scope list the picker needs.
+     Fetched lazily — 531 projects is not worth loading until someone asks. */
+  const [attachFloorId, setAttachFloorId] = useState<string | null>(null)
+  const [crmScopes, setCrmScopes] = useState<Scope[] | null>(null)
+  /* why the last attach was refused — the dialog stays open showing it */
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [attaching, setAttaching] = useState(false)
+  useEffect(() => {
+    if (attachFloorId === null || crmScopes !== null) return
+    let cancelled = false
+    fetch('/api/crm/scopes')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((d) => {
+        if (!cancelled) setCrmScopes(Array.isArray(d.scopes) ? d.scopes : [])
+      })
+      .catch(() => {
+        if (!cancelled) setCrmScopes([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [attachFloorId, crmScopes])
   const [canvasFiles, setCanvasFiles] = useState<CanvasFile[] | null>(null)
   const [canvasRunning, setCanvasRunning] = useState(true)
   const [loadingCanvas, setLoadingCanvas] = useState(false)
@@ -273,6 +373,10 @@ export function Sidebar({
   const dragGroupRef = useRef<string | null>(null)
   const reorderGroup = (fromId: string, toId: string) => {
     if (fromId === toId) return
+    /* deliberately the FULL array, not projectGroups: onReorderGroups persists
+       the order it is handed, so sending only the project ids would drop every
+       workflow-project off the store. Both ends of a drag are project rows, so
+       indexing into the full list still lands the row where it was dropped. */
     const ids = groups.map((g) => g.id)
     const fi = ids.indexOf(fromId)
     const ti = ids.indexOf(toId)
@@ -325,9 +429,16 @@ export function Sidebar({
     }
     setContentSearching(true)
     const handle = window.setTimeout(() => {
+      /* scoped to the ordinary projects only. Searching a workflow-project's
+         chats would put a run's private terminals into the Projects results by
+         way of a content hit, which is the back door the kind split closes. */
       const ids =
         tab === 'projects'
-          ? Array.from(new Set(groups.flatMap((g) => g.chats.map((c) => c.sessionId))))
+          ? Array.from(
+              new Set(
+                groups.filter(isProjectGroup).flatMap((g) => g.chats.map((c) => c.sessionId)),
+              ),
+            )
           : undefined
       api
         .searchContent(term, ids)
@@ -650,6 +761,7 @@ export function Sidebar({
     | { kind: 'group'; groupId: string; current: string }
     | { kind: 'group-chat'; groupId: string; sessionId: string; cwd: string; current: string }
     | { kind: 'add'; sessionId: string; cwd: string; current: string }
+    | { kind: 'floor'; floorId: string; current: string }
   const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null)
   const [editing, setEditing] = useState<MenuTarget | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -696,6 +808,10 @@ export function Sidebar({
       if (value !== '' && value !== editing.current) onRenameGroup(editing.groupId, value)
     } else if (editing.kind === 'group-chat') {
       if (value !== editing.current) renameGroupChat(editing.sessionId, value)
+    } else if (editing.kind === 'floor') {
+      /* A floor with no name is unfindable in the sidebar, so an emptied field
+         is treated as a cancel — the same rule 'project' and 'group' follow. */
+      if (value !== '' && value !== editing.current) onRenameFloor(editing.floorId, value)
     } else if (editing.kind === 'session') {
       /* empty clears the custom title (reverts to the derived summary) */
       if (value !== editing.current) onRenameSession(editing.projectId, editing.sessionId, value)
@@ -709,6 +825,7 @@ export function Sidebar({
     if (editing.kind === 'group-chat' && t.kind === 'group-chat')
       return editing.sessionId === t.sessionId
     if (editing.kind === 'session' && t.kind === 'session') return editing.sessionId === t.sessionId
+    if (editing.kind === 'floor' && t.kind === 'floor') return editing.floorId === t.floorId
     return false
   }
   useEffect(() => {
@@ -854,6 +971,27 @@ export function Sidebar({
     }
   }
 
+  /* — workflow-project inline rename —
+     kept apart from the `editing` machinery above rather than folded into it:
+     that one commits every kind through onRenameGroup, and this list is the
+     other half of the split, with a handler of its own. — */
+  const [wfRenameId, setWfRenameId] = useState<string | null>(null)
+  const [wfRenameValue, setWfRenameValue] = useState('')
+  const startWfRename = (g: ChatGroup) => {
+    setWfRenameId(g.id)
+    setWfRenameValue(g.name)
+  }
+  const commitWfRename = () => {
+    if (wfRenameId === null) return
+    const value = wfRenameValue.trim()
+    const current = workflowProjects.find((g) => g.id === wfRenameId)
+    /* an empty field would leave an unnameable row, so it reverts instead */
+    if (value !== '' && current !== undefined && value !== current.name) {
+      onRenameWorkflowProject(wfRenameId, value)
+    }
+    setWfRenameId(null)
+  }
+
   /* — folded: a thin rail with just the expand control — */
   if (collapsed) {
     return (
@@ -868,6 +1006,41 @@ export function Sidebar({
           <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
         </button>
         <div className="mt-4 h-px w-5 bg-brass" aria-hidden="true" />
+
+        {/* — the main-pane views stay reachable while collapsed. Without these
+             you could switch to the floor, collapse the sidebar, and have no way
+             back to the session panes without expanding again. — */}
+        {(
+          [
+            /* same order as the expanded rows, so the collapsed rail is not a
+               different mental map from the one you just used */
+            ['floor', 'Agents', Users],
+            ['skills', 'Skills', Sparkles],
+            ['mcp', 'MCP', Plug],
+            ['workflows', 'Workflows', Workflow],
+            ['projectWorkflows', 'Project Workflows', FolderKanban],
+            ['agentsWorkflow', 'Agents Workflow', Workflow],
+          ] as const
+        ).map(([value, label, Icon]) => {
+          const on = appView === value
+          return (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onSetAppView(on ? 'sessions' : value)}
+              title={on ? label + ' — back to the sessions' : label}
+              aria-label={label}
+              className={`mt-3 flex h-10 w-10 cursor-pointer items-center justify-center border transition-colors duration-200 ${
+                on
+                  ? 'border-brass bg-brass/10 text-brass'
+                  : 'border-transparent text-sand hover:border-brass hover:text-brass'
+              }`}
+            >
+              <Icon className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )
+        })}
       </aside>
     )
   }
@@ -903,7 +1076,7 @@ export function Sidebar({
         <div className="flex gap-1 px-4 pt-5">
           {(
             [
-              ['projects', 'Projects'],
+              ['projects', 'Groups'],
               ['directories', 'Directories'],
               ['recent', 'Recent'],
               ['canvas', 'Canvas'],
@@ -912,10 +1085,16 @@ export function Sidebar({
             <button
               key={value}
               type="button"
-              aria-pressed={tab === value}
-              onClick={() => setTab(value)}
+              aria-pressed={appView === 'sessions' && tab === value}
+              onClick={() => {
+                /* both rows are ONE group: picking a list view also drops
+                   the main-pane view back to the sessions, so two never read as
+                   selected at once */
+                onSetAppView('sessions')
+                setTab(value)
+              }}
               className={`min-w-0 flex-1 cursor-pointer truncate border px-1 py-2 text-center font-mono text-[8px] uppercase tracking-[0.02em] transition-colors duration-200 ${
-                tab === value
+                appView === 'sessions' && tab === value
                   ? 'border-brass bg-brass/10 text-brass'
                   : 'border-hairline text-sand hover:border-brass hover:text-brass'
               }`}
@@ -925,7 +1104,368 @@ export function Sidebar({
           ))}
         </div>
 
+        {/* — second row: the MAIN-PANE views. These are a different kind of
+             switch from the four above — those filter what this sidebar lists,
+             these replace what the workspace shows. Each is a toggle: pressing
+             the active one drops you back on the session panes. — */}
+        {/* WRAPS, deliberately. This row shares 240px between flex-1 chips, so a
+             fifth one drops all five to ~48px and every label truncates to four
+             characters — "WORKF…" next to "PROJE…" tells you nothing, and it
+             degrades the four tabs that were already fine. Wrapping costs one
+             line and buys a full-width chip on the second row, which is why the
+             new tab can carry its real name instead of an abbreviation. */}
+        {/* — isolation between the two groups. They are different KINDS of
+             switch: the row above filters what this sidebar LISTS, the rows
+             below replace what the main pane RENDERS. Without a rule they read
+             as one six-item group and the distinction disappears. — */}
+        <div aria-hidden="true" className="mx-4 mt-3 mb-2 h-px bg-hairline" />
+
+        <div className="flex flex-wrap gap-1 px-4">
+          {/* [value, chip label, full name] — the label and the full name differ
+               only where a chip is too narrow for the name. */}
+          {(
+            [
+              ['floor', 'Agents', 'Agents'],
+              ['skills', 'Skills', 'Skills'],
+              ['mcp', 'MCP', 'MCP'],
+              ['workflows', 'Workflow', 'Workflows'],
+              // second row — the two workflow views, side by side at half width
+              ['projectWorkflows', 'Project WF', 'Project Workflows'],
+              ['agentsWorkflow', 'Agent WF', 'Agents Workflow'],
+            ] as const
+          ).map(([value, label, full], i, all) => {
+            const on = appView === value
+            // Four to a row; a PARTIAL row divides its own width evenly rather
+            // than leaving quarter-width chips against dead space. An explicit
+            // basis is what makes flex-wrap actually wrap: `flex-1` alone is
+            // basis-0, so every chip would shrink onto one line instead.
+            const rowStart = Math.floor(i / 4) * 4
+            const inThisRow = Math.min(4, all.length - rowStart)
+            const basis =
+              inThisRow === 1
+                ? 'basis-full'
+                : inThisRow === 2
+                  ? 'basis-[calc(50%-2px)]'
+                  : inThisRow === 3
+                    ? 'basis-[calc(33.333%-3px)]'
+                    : 'basis-[calc(25%-3px)]'
+            return (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={on}
+                aria-label={full}
+                onClick={() => onSetAppView(on ? 'sessions' : value)}
+                title={on ? full + ' — back to the sessions' : full}
+                className={`min-w-0 grow ${basis} cursor-pointer truncate border px-1 py-2 text-center font-mono text-[8px] uppercase tracking-[0.02em] transition-colors duration-200 ${
+                  on
+                    ? 'border-brass bg-brass/10 text-brass'
+                    : 'border-hairline text-sand hover:border-brass hover:text-brass'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* — FLOORS: shown in place of the group list while either chart is the
+             selected view. ONE section serving two lists, filtered by kind — the
+             canvas, the rows and the affordances are identical, so forking it
+             would be the same code twice and a second place to fix a bug.
+             Opening one puts it in the workspace tab strip. — */}
+        {/* The Agents chart keeps this flat list. Agent WF has its own
+             disclosure list further down — rendering both showed every workflow
+             floor twice. */}
+        {appView === 'floor' && (
+          <section aria-label="Floors" className="px-4 pt-5">
+            <div className="flex items-center justify-between px-2">
+              <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">
+                Agents
+              </h2>
+              <button
+                type="button"
+                onClick={() => onAddFloor('agents')}
+                title="Add a floor"
+                className="flex h-6 cursor-pointer items-center gap-1 border border-hairline px-1.5 font-mono text-[8px] uppercase tracking-[0.14em] text-sand transition-colors duration-200 hover:border-brass hover:text-brass"
+              >
+                <Plus className="h-3 w-3" aria-hidden="true" />
+                Add floor
+              </button>
+            </div>
+
+            {(() => {
+              // The two charts share this section, so each shows only its own.
+              const shown = floors.filter((f) => f.kind !== 'workflow')
+              return shown.length === 0 ? (
+              <p className="mt-4 px-2 font-display text-[13px] italic leading-relaxed text-sand">
+                No floors yet. Add one and it opens as a tab on the right, with
+                its boss already seated.
+              </p>
+            ) : (
+              <ul className="mt-3 list-none">
+                {shown.map((f) =>
+                  /* Renaming works on BOTH floor lists. This one is a plain row
+                     rather than a SidebarRow, but a floor is a floor — offering
+                     rename only on the other chart would make the same object
+                     editable or not depending on which tab you found it in. */
+                  isEditing({ kind: 'floor', floorId: f.id, current: f.name }) ? (
+                    <li key={f.id}>{renameField}</li>
+                  ) : (
+                  <li key={f.id} className="group flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onOpenFloor(f)}
+                      onContextMenu={(e) =>
+                        openMenu(e, { kind: 'floor', floorId: f.id, current: f.name })
+                      }
+                      title={`Open ${f.name}`}
+                      className="min-w-0 flex-1 cursor-pointer truncate px-2 py-1.5 text-left font-display text-[13px] text-parchment transition-colors duration-200 hover:text-brass"
+                    >
+                      {f.name}
+                      <span className="ml-2 font-mono text-[9px] uppercase tracking-[0.14em] text-sand-dim">
+                        {f.agents.length}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteFloor(f.id)}
+                      title={`Delete ${f.name}`}
+                      aria-label={`Delete ${f.name}`}
+                      className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center text-transparent transition-colors duration-200 group-hover:text-sand-dim hover:!text-brass"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </li>
+                  ),
+                )}
+              </ul>
+            )
+            })()}
+
+          </section>
+        )}
+
+            {/* — the agents, listed exactly as Groups lists its chats: a
+                 SidebarRow you click to disclose, with the children indented
+                 under the same rail. Same components, so the two lists cannot
+                 drift apart visually. — */}
+            {appView === 'agentsWorkflow' && (
+              <div className="flex items-center justify-between px-2 pt-5">
+                <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">
+                  Agents Workflow
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => onAddFloor('workflow')}
+                  title="Add a workflow floor"
+                  className="flex h-6 cursor-pointer items-center gap-1 border border-hairline px-1.5 font-mono text-[8px] uppercase tracking-[0.14em] text-sand transition-colors duration-200 hover:border-brass hover:text-brass"
+                >
+                  <Plus className="h-3 w-3" aria-hidden="true" />
+                  Add floor
+                </button>
+              </div>
+            )}
+            {appView === 'agentsWorkflow' && (
+              <ul className="mt-3 space-y-0 border-t border-hairline-s">
+                {floors
+                  .filter((f) => f.kind === 'workflow')
+                  .map((f, i) => {
+                    const open = expandedFloors.has(f.id)
+                    return (
+                      <li key={f.id + '-agents'}>
+                        {isEditing({ kind: 'floor', floorId: f.id, current: f.name }) ? (
+                          renameField
+                        ) : (
+                        <SidebarRow
+                          index={i}
+                          title={f.name}
+                          /* The attachment belongs to the FLOOR, so it is shown
+                             on the floor's own row — not buried in a tab that
+                             sits inside the per-agent panel, where it reads as
+                             an agent setting. */
+                          subtitle={
+                            `${f.agents.length} agent${f.agents.length === 1 ? '' : 's'}` +
+                            (f.crmScope
+                              ? ' · ' +
+                                (f.crmScope.targetType === 'mine'
+                                  ? 'my tasks'
+                                  : f.crmScope.targetType)
+                              : ' · not attached')
+                          }
+                          expanded={open}
+                          active={f.agents.some(
+                            (a) => a.sessionId != null && activeSet.has(a.sessionId),
+                          )}
+                          onSelect={() =>
+                            setExpandedFloors((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(f.id)) next.delete(f.id)
+                              else next.add(f.id)
+                              return next
+                            })
+                          }
+                          /* open the design as a workspace tab — the affordance
+                             the flat list used to carry */
+                          onDoubleClick={() => onOpenFloor(f)}
+                          onContextMenu={(e) => openMenu(e, { kind: 'floor', floorId: f.id, current: f.name })}
+                        />
+                        )}
+                        {open && (
+                          <div className="ml-3 border-l border-hairline-s pl-1.5">
+                            {f.agents.length === 0 ? (
+                              <p className="px-2 py-3 font-display text-[13px] italic leading-relaxed text-sand">
+                                No agents yet — draw one on the floor.
+                              </p>
+                            ) : (
+                              <ul className="space-y-0">
+                                {f.agents.map((a, ai) => (
+                                  <li key={a.id}>
+                                    <SidebarRow
+                                      index={ai}
+                                      nested
+                                      title={a.isBoss ? a.name + ' ♔' : a.name}
+                                      subtitle={
+                                        (a.role || 'no role') +
+                                        (a.sessionId == null ? ' · no chat yet' : '')
+                                      }
+                                      selected={selAgentId === a.id && selFloorId === f.id}
+                                      active={a.sessionId != null && activeSet.has(a.sessionId)}
+                                      /* Clicking a name lands you IN the
+                                         conversation — that is what a person
+                                         means by clicking an agent. It reuses a
+                                         live chat and only starts one when the
+                                         agent has none. */
+                                      onSelect={() => onSelectAgent(f.id, a.id, true)}
+                                    />
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
+              </ul>
+            )}
+
+        {/* — WORKFLOW PROJECTS: shown in place of the project list while Project
+             Workflows is the selected view — the floors arrangement, applied to
+             the other half of the group split. Picking one drives the panel on
+             the right; unlike a floor it opens no tab, because the chats a run
+             spawns are private to that panel and stay inside it. — */}
+        {appView === 'projectWorkflows' && (
+          <section aria-label="Workflow projects" className="px-4 pt-5">
+            <div className="flex items-center justify-between px-2">
+              <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">
+                Workflow projects
+              </h2>
+              <button
+                type="button"
+                onClick={onNewWorkflowProject}
+                title="Add a workflow project"
+                aria-label="Add a workflow project"
+                className="flex h-6 cursor-pointer items-center gap-1 border border-hairline px-1.5 font-mono text-[8px] uppercase tracking-[0.14em] text-sand transition-colors duration-200 hover:border-brass hover:text-brass"
+              >
+                <Plus className="h-3 w-3" aria-hidden="true" />
+                Add
+              </button>
+            </div>
+
+            {workflowProjects.length === 0 ? (
+              <p className="mt-4 px-2 font-display text-[13px] italic leading-relaxed text-sand">
+                No workflow projects yet. Add one with <span className="text-brass">+</span>, then
+                attach a workflow on the right and run it. Every chat the run opens stays in this
+                view, apart from your projects.
+              </p>
+            ) : (
+              <ul className="mt-3 list-none">
+                {workflowProjects.map((g) => {
+                  if (wfRenameId === g.id) {
+                    return (
+                      <li key={g.id} className="border-b border-hairline-s py-1.5 pl-2 pr-2">
+                        <input
+                          value={wfRenameValue}
+                          autoFocus
+                          onChange={(e) => setWfRenameValue(e.target.value)}
+                          onBlur={commitWfRename}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              commitWfRename()
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault()
+                              setWfRenameId(null)
+                            }
+                          }}
+                          className="w-full border border-brass bg-surface-2 px-2 py-1 font-mono text-[12px] uppercase tracking-[0.06em] text-parchment outline-none"
+                          aria-label="Rename workflow project"
+                        />
+                      </li>
+                    )
+                  }
+                  const on = selectedWorkflowProjectId === g.id
+                  return (
+                    <li
+                      key={g.id}
+                      className={`group flex items-center gap-1 ${on ? 'bg-brass/10' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        aria-current={on ? 'true' : undefined}
+                        onClick={() => onSelectWorkflowProject(on ? null : g.id)}
+                        onDoubleClick={() => startWfRename(g)}
+                        title={on ? `${g.name} — pick it again to clear the panel` : `Open ${g.name}`}
+                        className={`min-w-0 flex-1 cursor-pointer truncate px-2 py-1.5 text-left font-display text-[13px] transition-colors duration-200 ${
+                          on ? 'text-brass' : 'text-parchment hover:text-brass'
+                        }`}
+                      >
+                        {g.name}
+                        <span className="ml-2 font-mono text-[9px] uppercase tracking-[0.14em] text-sand-dim">
+                          {g.chats.length}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startWfRename(g)}
+                        title={`Rename ${g.name}`}
+                        aria-label={`Rename ${g.name}`}
+                        className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center text-transparent transition-colors duration-200 group-hover:text-sand-dim hover:!text-brass"
+                      >
+                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteWorkflowProject(g.id)}
+                        title={`Delete ${g.name}`}
+                        aria-label={`Delete ${g.name}`}
+                        className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center text-transparent transition-colors duration-200 group-hover:text-sand-dim hover:!text-brass"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {/* projectWorkflows is absent here on purpose: it now lists its own
+             projects above, and a hint under the list would only repeat it. */}
+        {(appView === 'workflows' || appView === 'skills' || appView === 'mcp') && (
+          <p className="px-6 pt-6 font-display text-[13px] italic leading-relaxed text-sand">
+            {appView === 'workflows'
+              ? 'Workflows on the right — each step carries the tutorial its session gets briefed with.'
+              : appView === 'skills'
+                ? 'Skills installed on this machine, on the right.'
+                : 'MCP servers configured for Claude Code, on the right.'}
+          </p>
+        )}
+
         {/* — search: name/path + transcript content (reads the jsonl) — */}
+        {appView === 'sessions' && (
         <div className="px-4 pt-3">
           <div className="flex items-center gap-2 border border-hairline px-3 transition-colors duration-200 focus-within:border-brass">
             <Search className="h-3.5 w-3.5 shrink-0 text-sand-dim" aria-hidden="true" />
@@ -935,7 +1475,7 @@ export function Sidebar({
               onChange={(e) => setQuery(e.target.value)}
               placeholder={
                 tab === 'projects'
-                  ? 'Search projects, chats & content…'
+                  ? 'Search groups, chats & content…'
                   : tab === 'directories'
                     ? 'Search directories & content…'
                     : tab === 'canvas'
@@ -965,28 +1505,29 @@ export function Sidebar({
             </p>
           )}
         </div>
+        )}
 
         {/* — Projects: dir-less chat groups; members open in their own cwd — */}
-        {tab === 'projects' && (
-        <motion.section variants={itemVariants} aria-label="Projects" className="px-4 pt-6">
+        {appView === 'sessions' && tab === 'projects' && (
+        <motion.section variants={itemVariants} aria-label="Groups" className="px-4 pt-6">
           <div className="flex items-center justify-between px-2">
             <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">
               Projects
             </h2>
             <button
               type="button"
-              aria-label="New project"
+              aria-label="New group"
               onClick={() => onNewGroup()}
               className="mo-ticks flex h-10 w-10 cursor-pointer items-center justify-center border border-transparent text-sand transition-colors duration-200 hover:border-brass hover:text-brass"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
-          {groups.length === 0 ? (
+          {projectGroups.length === 0 ? (
             <div className="mt-3 border border-hairline px-4 py-6">
               <FolderGit2 className="h-4 w-4 text-sand-dim" aria-hidden="true" />
               <p className="mt-3 font-display text-[15px] italic leading-relaxed text-sand">
-                No projects yet. Create one with <span className="text-brass">+</span>, then add chats
+                No groups yet. Create one with <span className="text-brass">+</span>, then add chats
                 from Directories or Recent (right-click → Add to project).
               </p>
             </div>
@@ -1001,11 +1542,11 @@ export function Sidebar({
                   inc(c.cwd) ||
                   contentHits.has(c.sessionId),
               )
-            const visibleGroups = q === '' ? groups : groups.filter(groupMatches)
+            const visibleGroups = q === '' ? projectGroups : projectGroups.filter(groupMatches)
             if (visibleGroups.length === 0) {
               return (
                 <p className="mt-3 px-2 py-3 font-display text-[14px] italic leading-relaxed text-sand">
-                  No projects match “{query}”.
+                  No groups match “{query}”.
                 </p>
               )
             }
@@ -1231,7 +1772,7 @@ export function Sidebar({
         </motion.section>
         )}
 
-        {tab === 'recent' && (
+        {appView === 'sessions' && tab === 'recent' && (
           <section aria-label="Recent sessions" className="px-4 pt-6">
             <div className="flex items-center justify-between px-2">
               <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">
@@ -1318,7 +1859,7 @@ export function Sidebar({
           </section>
         )}
 
-        {tab === 'directories' && (
+        {appView === 'sessions' && tab === 'directories' && (
           <section aria-label="Directories" className="px-4 pt-6">
             <div className="flex items-center justify-between px-2">
               <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">
@@ -1439,7 +1980,7 @@ export function Sidebar({
           </section>
         )}
 
-        {tab === 'canvas' && (
+        {appView === 'sessions' && tab === 'canvas' && (
           <section aria-label="Canvas files" className="px-4 pt-6">
             <div className="flex items-center justify-between px-2">
               <h2 className="font-mono text-[10px] uppercase tracking-[0.24em] text-sand">Canvas</h2>
@@ -2203,6 +2744,79 @@ export function Sidebar({
       )}
 
       {/* — right-click context menu (rename / copy id / terminate) — */}
+      {/* — Attach a floor. A floor-level action, on the floor's own menu, in a
+           dialog that says plainly it cannot be undone — because the server
+           will not let it be. — */}
+      {attachFloorId !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-midnight/70 px-6"
+          onClick={() => {
+            setAttachFloorId(null)
+            setAttachError(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Attach this floor"
+            style={{ background: 'var(--color-surface)' }}
+            className="mo-card w-full max-w-xl shadow-2xl shadow-black/50"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="border-b border-hairline px-5 py-3.5 font-mono text-[10px] uppercase tracking-[0.3em] text-sand">
+              Attach “{floors.find((f) => f.id === attachFloorId)?.name ?? 'floor'}”
+            </header>
+            <div className="px-5 py-4">
+              <p className="mb-4 font-display text-[13px] leading-relaxed text-sand">
+                Pick what this floor works on. Its agents are briefed on this board, so
+                it <strong className="text-parchment">cannot be changed afterwards</strong> —
+                a different board means a different floor.
+              </p>
+              <ScopePicker
+                scopes={crmScopes ?? []}
+                value={null}
+                onChange={(next) => {
+                  const id = attachFloorId
+                  setAttaching(true)
+                  setAttachError(null)
+                  onAttachFloorScope(id, next)
+                    .then(() => setAttachFloorId(null))
+                    .catch((e) =>
+                      setAttachError(e?.message || 'the server refused the attachment'),
+                    )
+                    .finally(() => setAttaching(false))
+                }}
+              />
+              {crmScopes === null && (
+                <p className="mt-3 font-display text-[12px] italic text-sand-dim">
+                  Loading what is available in the CRM…
+                </p>
+              )}
+              {attaching && (
+                <p className="mt-3 font-display text-[12px] italic text-sand-dim">Attaching…</p>
+              )}
+              {attachError !== null && (
+                <p className="mt-3 border border-brass/40 bg-brass/5 px-3 py-2 font-display text-[12px] leading-relaxed text-parchment">
+                  Not attached — {attachError}
+                </p>
+              )}
+            </div>
+            <footer className="flex justify-end border-t border-hairline px-5 py-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setAttachFloorId(null)
+                  setAttachError(null)
+                }}
+                className="cursor-pointer border border-hairline px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-sand transition-colors duration-200 hover:border-brass hover:text-brass"
+              >
+                Cancel
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
       {menu !== null && (
         <div
           ref={menuRef}
@@ -2211,6 +2825,78 @@ export function Sidebar({
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {menu.target.kind === 'floor' && (
+            <>
+              {/* Attaching is a FLOOR action, so it lives on the floor's own
+                  menu. Offered only while unattached — the attachment is
+                  write-once and the server refuses a second one, so showing the
+                  item on an attached floor would only teach the rule by 409. */}
+              {(() => {
+                const t = menu.target
+                if (t.kind !== 'floor') return null
+                const f = floors.find((x) => x.id === t.floorId)
+                if (!f || f.crmScope) return null
+                /* Workflow floors only. An agents-kind floor opens as a bare
+                   design canvas with no Kanban tab, so a board attached to one
+                   would be invisible — and the attachment is write-once, which
+                   makes offering it there a trap rather than a spare option. */
+                if (f.kind !== 'workflow') return null
+                return (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAttachFloorId(t.floorId)
+                      setMenu(null)
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                  >
+                    <Link2 className="h-3 w-3" aria-hidden="true" />
+                    Attach to…
+                  </button>
+                )
+              })()}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => startRename(menu.target)}
+                className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+              >
+                <Pencil className="h-3 w-3" aria-hidden="true" />
+                Rename floor
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  /* narrow into a local: `menu` is state, so TS re-widens
+                     menu.target on every access inside the closure */
+                  const t = menu.target
+                  if (t.kind === 'floor') {
+                    const f = floors.find((x) => x.id === t.floorId)
+                    if (f) onOpenFloor(f)
+                  }
+                  setMenu(null)
+                }}
+                className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+              >
+                <PenTool className="h-3 w-3" aria-hidden="true" />
+                Open design
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  if (menu.target.kind === 'floor') onDeleteFloor(menu.target.floorId)
+                  setMenu(null)
+                }}
+                className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+              >
+                <Trash2 className="h-3 w-3" aria-hidden="true" />
+                Delete floor
+              </button>
+            </>
+          )}
           {menu.target.kind === 'project' && (
             <>
               <button
@@ -2603,14 +3289,16 @@ export function Sidebar({
                 Change directory…
               </button>
               <div className="px-3 pb-1.5 pt-1 font-mono text-[9px] uppercase tracking-[0.2em] text-sand-dim">
-                Add to project
+                Add to group
               </div>
-              {groups.length === 0 && (
+              {/* ordinary projects only — a workflow-project's membership is
+                  written by a run, never by hand from a loose chat */}
+              {projectGroups.length === 0 && (
                 <div className="px-3 py-2 font-display text-[12px] italic text-sand-dim">
-                  No projects yet
+                  No groups yet
                 </div>
               )}
-              {groups.map((g) => (
+              {projectGroups.map((g) => (
                 <button
                   key={g.id}
                   type="button"
@@ -2637,7 +3325,7 @@ export function Sidebar({
                 className="flex w-full cursor-pointer items-center gap-2.5 border-t border-hairline-s px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-brass transition-colors duration-150 hover:bg-surface-2/50"
               >
                 <Plus className="h-3 w-3" aria-hidden="true" />
-                New project
+                New group
               </button>
               <button
                 type="button"

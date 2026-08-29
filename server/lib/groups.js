@@ -94,6 +94,34 @@ function hydrateDirectories(record) {
   return []
 }
 
+// Which workflow TEMPLATES this project runs. A template is reusable across
+// projects — the same Feasibility SOP is attached to "Kharadi" and to "Baner" —
+// so the attachment lives HERE as a list of ids. workflow.groupId is import
+// provenance only and must never be read as "the project this workflow is on".
+const WORKFLOW_ID_RE = /^[0-9a-fA-F-]{8,64}$/
+function hydrateWorkflowIds(record) {
+  if (!Array.isArray(record?.workflowIds)) return [] // absent in stores written before this existed
+  const seen = new Set()
+  const out = []
+  for (const raw of record.workflowIds) {
+    const id = typeof raw === 'string' ? raw.trim() : ''
+    if (!WORKFLOW_ID_RE.test(id) || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+  }
+  return out
+}
+
+// Which LIST a group belongs to. Project workflows are kept apart from ordinary
+// projects on purpose — a workflow-project never appears in the sidebar's
+// project list and vice versa. Anything that is not the literal 'workflow' is a
+// plain project, and that default is load-bearing: every store written before
+// this key existed has no `kind` at all, so widening the test here would sweep
+// the user's real projects into the wrong list.
+function hydrateKind(record) {
+  return record?.kind === 'workflow' ? 'workflow' : 'project'
+}
+
 function hydrate(record) {
   if (!record || typeof record !== 'object' || !record.id) return null
   const name =
@@ -102,12 +130,14 @@ function hydrate(record) {
   return {
     id: String(record.id),
     name,
+    kind: hydrateKind(record),
     createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString(),
     chats,
     // project metadata (all optional, default to empty)
     directories: hydrateDirectories(record),
     description: clampDescription(record.description),
     color: clampColor(record.color),
+    workflowIds: hydrateWorkflowIds(record),
   }
 }
 
@@ -145,12 +175,20 @@ function saveStore() {
   fs.renameSync(tmp, GROUPS_FILE)
 }
 
-export function listGroups() {
-  return groups.map((g) => ({
+// Deep enough that a caller mutating what it got back cannot reach into the
+// store — the arrays are copied, not aliased. Scalars (`kind` included) ride
+// out on the spread.
+function clone(g) {
+  return {
     ...g,
     chats: g.chats.map((c) => ({ ...c })),
     directories: g.directories.map((d) => ({ ...d })),
-  }))
+    workflowIds: [...g.workflowIds],
+  }
+}
+
+export function listGroups() {
+  return groups.map(clone)
 }
 
 function getGroup(id) {
@@ -163,15 +201,19 @@ function clampName(name) {
   return t.length > 120 ? t.slice(0, 120) : t
 }
 
-export function createGroup(name) {
+/** `kind` is optional and defaults to an ordinary project, so every caller
+ *  written before the workflow/project split keeps working unchanged. */
+export function createGroup(name, kind = 'project') {
   const group = {
     id: crypto.randomUUID(),
     name: clampName(name),
+    kind: hydrateKind({ kind }),
     createdAt: new Date().toISOString(),
     chats: [],
     directories: [],
     description: '',
     color: '',
+    workflowIds: [],
   }
   groups.push(group)
   saveStore()
@@ -193,6 +235,7 @@ export function updateGroup(id, input) {
   if (!group) return undefined
   const i = input && typeof input === 'object' ? input : {}
   if (i.name !== undefined) group.name = clampName(i.name)
+  if (i.kind !== undefined) group.kind = hydrateKind({ kind: i.kind })
   if (i.directories !== undefined) {
     group.directories = hydrateDirectories({ directories: i.directories })
   } else if (i.directory !== undefined) {
@@ -201,6 +244,9 @@ export function updateGroup(id, input) {
   }
   if (i.description !== undefined) group.description = clampDescription(i.description)
   if (i.color !== undefined) group.color = clampColor(i.color)
+  if (i.workflowIds !== undefined) {
+    group.workflowIds = hydrateWorkflowIds({ workflowIds: i.workflowIds })
+  }
   saveStore()
   return group
 }
@@ -250,6 +296,33 @@ export function findGroupsBySession(sessionId) {
   const sid = String(sessionId || '')
   if (!sid || sid === 'new') return []
   return groups.filter((g) => g.chats.some((c) => c.sessionId === sid))
+}
+
+/** Attach a workflow template to this project. Idempotent on purpose: the same
+ *  template can be offered from several places in the UI, and attaching twice
+ *  must be a no-op rather than a second identical row in the list. */
+export function attachWorkflow(groupId, workflowId) {
+  const group = getGroup(groupId)
+  if (!group) return undefined
+  const id = String(workflowId || '').trim()
+  if (!WORKFLOW_ID_RE.test(id)) throw new ValidationError('invalid workflowId')
+  if (!group.workflowIds.includes(id)) {
+    group.workflowIds.push(id)
+    saveStore()
+  }
+  return group
+}
+
+/** Detach a template. Deliberately does NOT touch runs started from it — those
+ *  are real sessions with real transcripts and outlive the attachment. */
+export function detachWorkflow(groupId, workflowId) {
+  const group = getGroup(groupId)
+  if (!group) return undefined
+  const id = String(workflowId || '')
+  const before = group.workflowIds.length
+  group.workflowIds = group.workflowIds.filter((w) => w !== id)
+  if (group.workflowIds.length !== before) saveStore()
+  return group
 }
 
 export function removeChatFromGroup(id, sessionId) {

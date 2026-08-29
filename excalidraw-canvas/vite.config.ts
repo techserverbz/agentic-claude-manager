@@ -6,15 +6,15 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5111,
+    port: 5811,
     open: false,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:4111',
+        target: 'http://127.0.0.1:4811',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://127.0.0.1:4111',
+        target: 'ws://127.0.0.1:4811',
         ws: true,
       },
     },

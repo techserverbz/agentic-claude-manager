@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --port 5200 --strictPort",
+    "dev": "vite --port 5840 --strictPort",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
@@ -12,6 +12,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "@xyflow/react": "^12.11.3",
     "framer-motion": "^11.15.0",
     "lucide-react": "^0.515.0",
     "react": "^18.3.1",

@@ -12,14 +12,22 @@ import {
   Plus,
   RefreshCw,
   Square,
+  Info,
   Sun,
   TerminalSquare,
   X,
 } from 'lucide-react'
-import type { DefaultView, PaneMode, SavedView, Theme, WorkTab } from '../App'
-import type { Project } from '../lib/api'
+import type { AppView, DefaultView, PaneMode, SavedView, Theme, WorkTab } from '../App'
+import type { Floor, FloorAgent, Project } from '../lib/api'
+import { FloorDesigner } from './FloorDesigner'
 import { CelestialSphere } from './CelestialSphere'
 import { SessionPane } from './SessionPane'
+import { McpPanel } from './McpPanel'
+import { SkillsPanel } from './SkillsPanel'
+import { ToolsInfoModal } from './ToolsInfoModal'
+import { AgentWorkflowPanel } from './AgentWorkflowPanel'
+import { ProjectWorkflowsPanel } from './ProjectWorkflowsPanel'
+import { WorkflowsPanel } from './WorkflowsPanel'
 
 /**
  * Workspace — the TAB + MULTIPANE shell.
@@ -66,6 +74,23 @@ export function Workspace({
   onActiveSessionsChange,
   onNewProject,
   canvasSplit,
+  appView,
+  onSetAppView,
+  selectedWorkflowProjectId,
+  floors,
+  onOpenAgentChat,
+  onAttachScope,
+  selectedProjectId,
+  selFloorId,
+  selAgentId,
+  onSelectAgent,
+  openChatSignal,
+  agentSlots,
+  onAgentSlotsChange,
+  onPatchAgent,
+  onRemoveAgent,
+  onSetFloorPrompt,
+  onRefreshFloors,
 }: {
   openTabs: WorkTab[]
   activeTabKey: string | null
@@ -110,6 +135,42 @@ export function Workspace({
   /** the canvas is open beside the panes (split) — glow the focused pane even
       when there's only one, so it reads as the active half */
   canvasSplit?: boolean
+  /** which top-level view is showing (owned by App; the Sidebar switches it) */
+  appView: AppView
+  onSetAppView: (v: AppView) => void
+  /** the workflow-project chosen in the sidebar — Project Workflows shows this
+      one and nothing else. Deliberately NOT a session-opening route: a run's
+      father and step chats are private to that panel and open inside it, so
+      Workspace hands it a selection, not a way out into the tab strip. */
+  selectedWorkflowProjectId: string | null
+  /** every floor, so a floor tab can resolve its own org chart */
+  floors: Floor[]
+  /** open (or reuse) the chat bound to one agent on a floor */
+  onOpenAgentChat: (floorId: string, agentId: string) => Promise<void>
+  /** attach a floor to a CRM project / service / the organisation */
+  onAttachScope: (
+    floorId: string,
+    scope: { targetType: string; targetId: string | null },
+  ) => Promise<void>
+  /** the sidebar's selected project — an agent chat needs a working directory */
+  selectedProjectId: string | null
+  /** the agent the sidebar has selected for the Agent WF view */
+  selFloorId: string | null
+  selAgentId: string | null
+  onSelectAgent: (floorId: string, agentId: string, openChat?: boolean) => void
+  /** bumped when a selection asked to land in the chat, not just select */
+  openChatSignal: number
+  /** which agent is in which window on the agent grid — owned by App so a
+   *  saved view can capture it */
+  agentSlots: (string | null)[]
+  onAgentSlotsChange: (slots: (string | null)[]) => void
+  /** edit one agent in place (name, role, brief, skills, servers, model) */
+  onPatchAgent: (floorId: string, agentId: string, patch: Partial<FloorAgent>) => void
+  /** take one agent off its floor */
+  onRemoveAgent: (floorId: string, agentId: string) => void
+  /** save a floor's preamble; rejects so the editor can say it failed */
+  onSetFloorPrompt: (floorId: string, globalPrompt: string) => Promise<void>
+  onRefreshFloors: () => void
 }) {
   const liveSet = new Set(liveSessionIds)
   const projectById = (id: string): Project | null => projects.find((p) => p.id === id) ?? null
@@ -160,6 +221,7 @@ export function Workspace({
   /* the views dropdown (saved layouts) + inline rename of a view */
   const [viewsOpen, setViewsOpen] = useState(false)
   const [viewsModalOpen, setViewsModalOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [editViewId, setEditViewId] = useState<string | null>(null)
   const [viewDraft, setViewDraft] = useState('')
   const viewsWrapRef = useRef<HTMLDivElement>(null)
@@ -373,7 +435,7 @@ export function Workspace({
                 aria-label="Number of windows"
                 className="absolute right-0 top-[calc(100%+4px)] z-20 min-w-[7rem] border border-hairline bg-surface py-1 shadow-lg shadow-black/30"
               >
-                {[2, 3, 4, 5, 6].map((n) => {
+                {[2, 3, 4, 5, 6, 8, 10, 12].map((n) => {
                   const sel = windowCount === n
                   return (
                     <button
@@ -538,6 +600,15 @@ export function Workspace({
               suspended/moved the tab */}
           <button
             type="button"
+            onClick={() => setToolsOpen(true)}
+            aria-label="Tools in this application"
+            title="Tools — what an agent in this app can call"
+            className="mo-ticks flex h-10 w-10 cursor-pointer items-center justify-center border border-transparent text-sand transition-colors duration-200 hover:border-brass hover:text-brass"
+          >
+            <Info className="h-4 w-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             onClick={handleRefreshClick}
             aria-label="Refresh all chats"
             title="Refresh all chats — reconnect every shell and reload its log"
@@ -636,6 +707,49 @@ export function Workspace({
                 )
               }
 
+              /* — FLOOR slot: an org chart rather than a session. Same column
+                   shell as a real pane so it splits, focuses and reorders
+                   identically; it just has no pty behind it. — */
+              if (t.kind === 'floor') {
+                const floor = floors.find((f) => f.id === t.floorId) ?? null
+                return (
+                  <div
+                    key={t.key}
+                    onPointerDownCapture={() => {
+                      if (!isFocused) onSelectTab(t.key)
+                    }}
+                    {...(canReorder && isVisible ? dropTargetProps(t.key) : {})}
+                    aria-hidden={isVisible ? undefined : true}
+                    className={
+                      isVisible
+                        ? `relative min-h-0 min-w-[300px] flex-1 basis-0 bg-surface ${
+                            isDragging ? 'opacity-40' : ''
+                          }`
+                        : 'invisible absolute inset-0 bg-surface'
+                    }
+                  >
+                    {floor === null ? (
+                      <div className="flex h-full items-center justify-center px-6 text-center font-display text-[14px] italic text-sand">
+                        This floor was deleted.
+                      </div>
+                    ) : (
+                      <FloorDesigner floor={floor} theme={theme} />
+                    )}
+                    {isVisible && (cols > 1 || canvasSplit) && (
+                      <div
+                        aria-hidden="true"
+                        className={
+                          isFocused
+                            ? 'pointer-events-none absolute inset-0 z-20 ring-2 ring-inset ring-brass'
+                            : 'pointer-events-none absolute inset-0 z-10 ring-1 ring-inset ring-hairline'
+                        }
+                      />
+                    )}
+                    {dropOverlay}
+                  </div>
+                )
+              }
+
               /* — REAL slot: its SessionPane column. The drag GRIP lives in the
                    pane header (so the terminal stays interactive); the wrapper is
                    the drop target. — */
@@ -690,8 +804,72 @@ export function Workspace({
             })}
           </div>
         )}
+
+        {/* — Workflows rides ON TOP of the session columns, never instead of
+             them. Rendering it as an alternative would unmount every
+             SessionPane, and unmounting disposes its xterm and socket, which
+             kills the server-side pty — the exact failure the CRITICAL note at
+             the top of this file warns about.
+
+             'floor' is NOT here on purpose: a floor opens as its own tab in the
+             strip above, so it sits beside the sessions and can be split-paned
+             against a live terminal. Selecting Agent Floor only re-points the
+             SIDEBAR at the floor list. — */}
+        {(appView === 'workflows' ||
+          appView === 'projectWorkflows' ||
+          appView === 'agentsWorkflow' ||
+          appView === 'skills' ||
+          appView === 'mcp') && (
+          <div className="absolute inset-0 z-20">
+            {appView === 'agentsWorkflow' ? (
+              <AgentWorkflowPanel
+                floors={floors}
+                projects={projects}
+                /* the ORDINARY sidebar project, not selectedWorkflowProjectId —
+                   that one is only ever set by the Project Workflows group
+                   picker, so agent chats read it as null and every agent showed
+                   "choose a project" no matter what was selected */
+                selectedProjectId={selectedProjectId}
+                liveSessionIds={liveSessionIds}
+                selFloorId={selFloorId}
+                selAgentId={selAgentId}
+                onSelectAgent={onSelectAgent}
+                openChatSignal={openChatSignal}
+                windowCount={windowCount}
+                paneMode={paneMode}
+                agentSlots={agentSlots}
+                onAgentSlotsChange={onAgentSlotsChange}
+                onPatchAgent={onPatchAgent}
+                onRemoveAgent={onRemoveAgent}
+                onSetFloorPrompt={onSetFloorPrompt}
+                onRefreshFloors={onRefreshFloors}
+                theme={theme}
+                onOpenAgentChat={onOpenAgentChat}
+                onAttachScope={onAttachScope}
+                defaultView={defaultView}
+                shellRefresh={shellRefresh}
+                reconnectAllSignal={reconnectAllSignal}
+                onSessionIdChange={onSessionIdChange}
+                onActiveSessionsChange={onActiveSessionsChange}
+              />
+            ) : appView === 'workflows' ? (
+              <WorkflowsPanel />
+            ) : appView === 'projectWorkflows' ? (
+              <ProjectWorkflowsPanel
+                selectedProjectId={selectedWorkflowProjectId}
+                theme={theme}
+              />
+            ) : appView === 'skills' ? (
+              <SkillsPanel />
+            ) : (
+              <McpPanel />
+            )}
+          </div>
+        )}
       </div>
     </main>
+
+    {toolsOpen && <ToolsInfoModal onClose={() => setToolsOpen(false)} />}
 
     {/* — "All views" modal: a roomy manager for saved views — */}
     {viewsModalOpen && (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DragEvent } from 'react'
+import type { DragEvent, ReactNode } from 'react'
 import { GripVertical, MessageSquare, RotateCcw, TerminalSquare, X } from 'lucide-react'
 import type { DefaultView, Theme } from '../App'
 
@@ -64,6 +64,9 @@ export function SessionPane({
   onActiveSessionsChange,
   onClose,
   dragHandleProps,
+  headerLead,
+  headerActions,
+  hideTitle,
 }: {
   project: Project | null
   sessionId: string | null
@@ -93,6 +96,13 @@ export function SessionPane({
   onActiveSessionsChange?: (ids: string[]) => void
   /** close this window (drop its tab) */
   onClose?: () => void
+  /** rendered at the START of the pane's header row */
+  headerLead?: ReactNode
+  /** rendered just before the CHAT|TERMINAL nav */
+  headerActions?: ReactNode
+  /** suppress the pane's own chat-name/project line — for callers whose
+   *  headerLead already says what this pane is */
+  hideTitle?: boolean
 }) {
   /* stable unique key for THIS pane's 'new' (not-yet-minted) session — each pane
      gets its own so multiple new-chat tabs don't share one server-side pty */
@@ -271,14 +281,27 @@ export function SessionPane({
             <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         )}
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-[11px] tracking-[0.02em] text-parchment">
-            {chatName}
+        {/* Caller-supplied lead, in THIS row rather than in a second header
+            stacked above it. The agent grid uses it for its floor label and
+            agent picker: without it the pane grew a header of its own and the
+            agent's name ended up written three times on one window. */}
+        {headerLead}
+        {/* The chat's own name, unless the caller is already naming this pane.
+            An agent's chat is titled after the agent, so in the agent grid this
+            line said "Michael · agent" next to a picker that said "Michael" —
+            the same word twice on one row. */}
+        {hideTitle ? (
+          <span className="min-w-0 flex-1" />
+        ) : (
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-mono text-[11px] tracking-[0.02em] text-parchment">
+              {chatName}
+            </div>
+            <div className="truncate font-mono text-[9px] uppercase tracking-[0.06em] text-sand-dim">
+              {project.name}
+            </div>
           </div>
-          <div className="truncate font-mono text-[9px] uppercase tracking-[0.06em] text-sand-dim">
-            {project.name}
-          </div>
-        </div>
+        )}
         {/* reconnect ONLY when the shell died — no live/status text in the bar */}
         {view === 'terminals' && (termStatus === 'exited' || termStatus === 'closed') && (
           <button
@@ -291,6 +314,7 @@ export function SessionPane({
             Reconnect
           </button>
         )}
+        {headerActions}
         <nav className="flex shrink-0 items-center gap-1" aria-label="Pane view">
           {SUB_NAV.map(({ id, label, icon: Icon }) => {
             const isActive = view === id
@@ -333,7 +357,7 @@ export function SessionPane({
           <section
             aria-label="Chat"
             aria-hidden={liveChat ? undefined : true}
-            className={`absolute inset-0 ${liveChat ? '' : 'invisible'}`}
+            className={`absolute inset-0 ${liveChat ? '' : 'invisible pointer-events-none'}`}
           >
             <ChatPanel
               project={project}
@@ -357,7 +381,7 @@ export function SessionPane({
               key={`terminal-${project.id}-${slotKeyFor(sk)}`}
               aria-label="Terminal"
               aria-hidden={showHere ? undefined : true}
-              className={`absolute inset-0 ${showHere ? '' : 'invisible'}`}
+              className={`absolute inset-0 ${showHere ? '' : 'invisible pointer-events-none'}`}
             >
               <TerminalPanel
                 project={project}

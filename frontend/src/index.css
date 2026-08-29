@@ -1,5 +1,14 @@
 @import 'tailwindcss';
 
+/* Tailwind v4's `dark:` follows prefers-color-scheme by default, but this app
+   swaps themes with a `.dark` class on <html> (set before paint by the
+   index.html bootstrap). Without this the two disagree the moment the user's OS
+   and the in-app toggle differ — a light OS would render the CRM goal badges in
+   their light palette on top of V2's midnight paper.
+   Declared because the CRM's own badge classes are reproduced VERBATIM on the
+   Kanban cards, and they are written light-first with `dark:` overrides. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ————————————————————————————————————————————————————————————
    Christopher OS — 1Cal “Manifesto” (Landing L)
    Cream observatory paper by day, midnight paper by night.

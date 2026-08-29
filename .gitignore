@@ -39,3 +39,16 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# CRM credentials for the V2 read client — never commit
+server/data/crm-auth.json
+server/data/crm-tokens.json
+
+# Per-workflow folders — each holds a copy of the machine's Claude credentials,
+# that workflow's session transcripts and its cache. Generated at runtime with
+# absolute paths baked in, so they are this machine's, not the project's.
+workflows/
+
+# Stray scratch files from earlier tooling
+*.tmp
+.advrev/

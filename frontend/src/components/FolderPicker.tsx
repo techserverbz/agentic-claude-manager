@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUp, Folder, HardDrive, X } from 'lucide-react'
+import { ArrowUp, Folder, FolderPlus, HardDrive, X } from 'lucide-react'
 import { api } from '../lib/api'
 
 /**
@@ -31,7 +31,31 @@ export function FolderPicker({
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** the inline new-folder field. Inline rather than a nested dialog: this is
+      already a dialog, and stacking a second one over it makes Escape ambiguous. */
+  const [newName, setNewName] = useState('')
+  const [creating, setCreating] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
+
+  /** Create a folder inside `current` and step into it, so "new folder" and
+   *  "use it" are one gesture rather than two. The server does the validating —
+   *  duplicating its rules here would just mean two places to disagree. */
+  const createFolder = useCallback(() => {
+    const name = newName.trim()
+    if (name === '' || current === '' || creating) return
+    setCreating(true)
+    setError(null)
+    void api
+      .makeDir(current, name)
+      .then(({ path }) => {
+        setNewName('')
+        setCurrent(path) // stepping in re-lists via the effect that watches `current`
+      })
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : 'Could not create that folder.'),
+      )
+      .finally(() => setCreating(false))
+  }, [newName, current, creating])
 
   /* seed the starting location each time it opens */
   useEffect(() => {
@@ -186,6 +210,38 @@ export function FolderPicker({
             </div>
 
             {/* — footer — */}
+            {/* New folder sits ABOVE the footer, in the browsing area it acts on:
+                it creates inside whatever you are looking at, and putting it
+                beside "Use this folder" would suggest it acts on the result. */}
+            {!atDrives && (
+              <div className="mt-3 flex items-center gap-2 border border-hairline px-3 transition-colors duration-200 focus-within:border-brass">
+                <FolderPlus className="h-3.5 w-3.5 shrink-0 text-sand-dim" aria-hidden="true" />
+                <input
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      createFolder()
+                    }
+                  }}
+                  placeholder="New folder here…"
+                  spellCheck={false}
+                  aria-label="Name for a new folder"
+                  className="w-full bg-transparent py-2 font-mono text-[11px] text-parchment placeholder:text-sand-dim outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={createFolder}
+                  disabled={creating || newName.trim() === ''}
+                  className="shrink-0 cursor-pointer font-mono text-[9px] uppercase tracking-[0.2em] text-sand transition-colors duration-150 hover:text-brass disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {creating ? 'Creating…' : 'Create'}
+                </button>
+              </div>
+            )}
+
             <div className="mt-4 flex items-center justify-between gap-3 border-t border-hairline-s pt-4">
               <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-sand-dim">
                 {atDrives ? 'Select a drive to begin' : current}
