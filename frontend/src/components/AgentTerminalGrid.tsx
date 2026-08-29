@@ -10,6 +10,7 @@ import {
   Plug,
   Sparkles,
   SlidersHorizontal,
+  TerminalSquare,
   Users2,
 } from 'lucide-react'
 import type { DefaultView, Theme } from '../App'
@@ -265,10 +266,10 @@ export function AgentTerminalGrid({
     <div
       className={
         layout === 'grid'
-          ? /* No gap and no backdrop showing through: the divider is a
-                 border on the pane itself, so the only thing between two
-                 terminals is one hairline. */
-            'no-scrollbar relative flex h-full min-h-0 w-full overflow-x-auto overflow-y-hidden bg-midnight'
+          ? /* One row of full-height vertical columns, shrinking to share the
+                 width so every selected window stays visible (no side-scroll).
+                 The hairline gap is the only thing between two terminals. */
+            'relative flex h-full min-h-0 w-full gap-px overflow-hidden bg-hairline'
           : 'relative h-full min-h-0 w-full'
       }
     >
@@ -302,9 +303,7 @@ export function AgentTerminalGrid({
                     shown ? 'z-10' : 'invisible pointer-events-none z-0'
                   }`
                 : shown
-                  ? `relative flex min-h-0 min-w-[300px] flex-1 basis-0 flex-col bg-surface ${
-                      slotIndex > 0 ? 'border-l border-hairline' : ''
-                    }`
+                  ? 'relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col bg-surface'
                   : /* in nobody's window: still mounted and still running,
                        parked out of the row rather than deleted from it */
                     'invisible pointer-events-none absolute inset-0 flex flex-col bg-surface'
@@ -453,6 +452,45 @@ export function AgentTerminalGrid({
           </section>
         )
       })}
+      {/* EMPTY WINDOWS: when the toolbar asks for more windows than there are
+          agents to fill them, the leftover slots show as empty placeholders —
+          the same idea as the workspace's empty slots — so the number you pick
+          is the number you see. Each carries a picker, so it is also how you
+          drop an agent into that window. */}
+      {layout === 'grid' &&
+        Array.from({ length: slotCount }, (_, i) => i)
+          .filter((i) => !slots[i])
+          .map((i) => (
+            <section
+              key={`empty-${i}`}
+              aria-label={`Empty window ${i + 1}`}
+              className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-3 bg-surface px-4 text-center"
+              style={{ order: i }}
+              onPointerDownCapture={() => setFocusedSlot(i)}
+            >
+              {focusedSlot === i && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 z-20 ring-2 ring-inset ring-brass"
+                />
+              )}
+              <TerminalSquare className="h-5 w-5 text-sand-dim" aria-hidden="true" />
+              <p className="max-w-[14rem] font-display text-[12.5px] italic leading-relaxed text-sand-dim">
+                Empty window — pick an agent to place here.
+              </p>
+              <div className="border border-hairline">
+                <AgentPicker
+                  value=""
+                  options={pickerOptions}
+                  showFloor={floors.length > 1}
+                  onChange={(k) => {
+                    setFocusedSlot(i)
+                    assign(i, k)
+                  }}
+                />
+              </div>
+            </section>
+          ))}
     </div>
   )
 }

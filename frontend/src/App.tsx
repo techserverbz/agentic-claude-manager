@@ -95,7 +95,8 @@ function initialPaneMode(): PaneMode {
 /** how many panes when multi (2–6) — persisted under 'cos-window-count' */
 function initialWindowCount(): number {
   const raw = Number(localStorage.getItem('cos-window-count'))
-  return Number.isFinite(raw) && raw >= 2 && raw <= 12 ? Math.floor(raw) : 2
+  if (!Number.isFinite(raw)) return 2
+  return Math.min(6, Math.max(2, Math.floor(raw)))
 }
 
 /** a saved VIEW — a named snapshot of the whole multipane layout (how many
@@ -1468,7 +1469,7 @@ export default function App() {
     const view = views.find((v) => v.id === id)
     if (view === undefined) return
     setPaneMode(view.paneMode)
-    setWindowCount(view.windowCount)
+    setWindowCount(Math.min(6, Math.max(2, view.windowCount)))
     setOpenTabs(view.tabs)
     setActiveTabKey(view.activeKey)
     // restore the canvas paired with this view (null clears it)

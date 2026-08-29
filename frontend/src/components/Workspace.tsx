@@ -257,6 +257,10 @@ export function Workspace({
      each position is shown side by side. cols>1 enables the per-pane brass ring.
      In single mode only the active real tab shows; the other reals stay mounted
      but hidden so their pty + chat stream survive a tab switch. */
+  /* multi-pane is a single row of full-height VERTICAL COLUMNS. The columns
+     shrink to share the width evenly (min-w-0, no fixed minimum) so every
+     selected window — up to 6 — stays visible at once instead of scrolling off
+     the side. */
   const cols = paneMode === 'single' ? 1 : windowCount
 
   /* — drag-to-rearrange (multi, >1 slot): a header grip starts the drag, every
@@ -433,9 +437,9 @@ export function Workspace({
               <div
                 role="listbox"
                 aria-label="Number of windows"
-                className="absolute right-0 top-[calc(100%+4px)] z-20 min-w-[7rem] border border-hairline bg-surface py-1 shadow-lg shadow-black/30"
+                className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-[7rem] border border-hairline bg-surface py-1 shadow-lg shadow-black/30"
               >
-                {[2, 3, 4, 5, 6, 8, 10, 12].map((n) => {
+                {[2, 3, 4, 5, 6].map((n) => {
                   const sel = windowCount === n
                   return (
                     <button
@@ -481,7 +485,7 @@ export function Workspace({
               <div
                 role="menu"
                 aria-label="Saved views"
-                className="absolute right-0 top-[calc(100%+4px)] z-20 min-w-[15rem] border border-hairline bg-surface py-1 shadow-lg shadow-black/30"
+                className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-[15rem] border border-hairline bg-surface py-1 shadow-lg shadow-black/30"
               >
                 {views.length === 0 ? (
                   <p className="px-3 py-2 font-display text-[13px] italic leading-snug text-sand-dim">
@@ -646,7 +650,7 @@ export function Workspace({
              Columns share width evenly but never shrink below a readable min,
              beyond which the row scrolls. The focused slot carries the brass ring
              (real or empty); a clicked empty slot fills with the next session. */
-          <div className="no-scrollbar flex h-full gap-px overflow-x-auto overflow-y-hidden bg-hairline">
+          <div className="flex h-full gap-px overflow-hidden bg-hairline">
             {openTabs.map((t) => {
               const isFocused = t.key === activeTabKey
               /* single: only the active real tab is on-screen; multi: all slots */
@@ -685,7 +689,7 @@ export function Workspace({
                     }}
                     {...(canReorder ? dragHandleProps(t.key) : {})}
                     {...(canReorder ? dropTargetProps(t.key) : {})}
-                    className={`relative flex min-h-0 min-w-[300px] flex-1 basis-0 cursor-pointer flex-col items-center justify-center gap-3 bg-surface px-6 text-center ${ringClass} ${
+                    className={`relative flex min-h-0 min-w-0 flex-1 basis-0 cursor-pointer flex-col items-center justify-center gap-3 bg-surface px-6 text-center ${ringClass} ${
                       isDragging ? 'opacity-40' : ''
                     }`}
                   >
@@ -722,7 +726,7 @@ export function Workspace({
                     aria-hidden={isVisible ? undefined : true}
                     className={
                       isVisible
-                        ? `relative min-h-0 min-w-[300px] flex-1 basis-0 bg-surface ${
+                        ? `relative min-h-0 min-w-0 flex-1 basis-0 bg-surface ${
                             isDragging ? 'opacity-40' : ''
                           }`
                         : 'invisible absolute inset-0 bg-surface'
@@ -763,7 +767,7 @@ export function Workspace({
                   aria-hidden={isVisible ? undefined : true}
                   className={
                     isVisible
-                      ? `relative min-h-0 min-w-[300px] flex-1 basis-0 bg-surface ${
+                      ? `relative min-h-0 min-w-0 flex-1 basis-0 bg-surface ${
                           isDragging ? 'opacity-40' : ''
                         }`
                       : 'invisible absolute inset-0 bg-surface'
