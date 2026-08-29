@@ -573,6 +573,24 @@ export const api = {
     return request<UpdateCheck>('/api/updates/check')
   },
 
+  /** Pull the new version in. Fast-forward only, and refused outright on a
+   *  dirty tree — the server will not touch uncommitted work. Reinstalls
+   *  only when the lockfile moved and rebuilds only when the frontend did. */
+  async applyUpdate(): Promise<{
+    updated: boolean
+    message?: string
+    from?: string
+    to?: string
+    needsRestart?: boolean
+    steps?: { label: string; ok: boolean; out: string }[]
+  }> {
+    return request('/api/updates/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  },
+
   /** search transcript CONTENT (reads the jsonl). Pass sessionIds to restrict the
       scan (Projects tab members); omit to search every session on the machine. */
   async searchContent(

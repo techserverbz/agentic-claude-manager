@@ -24,6 +24,7 @@ import {
   Power,
   RefreshCw,
   Search,
+  Download,
   Settings,
   SlidersHorizontal,
   Terminal as TerminalIcon,
@@ -912,6 +913,10 @@ export function Sidebar({
   /* — settings modal (default-view toggle + ports) — */
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<'general' | 'ports'>('general')
+  /* the update-now half. The check only ever told you to go and run git
+     yourself, which is a strange thing for an app that IS a git checkout. */
+  const [applying, setApplying] = useState(false)
+  const [applyResult, setApplyResult] = useState<{ ok: boolean; text: string } | null>(null)
   /* — "Check for updates": ask the server to compare against the GitHub repo — */
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null)
@@ -2222,11 +2227,58 @@ export function Sidebar({
                         </div>
                       )}
                       <div className="mt-1.5 tracking-[0.02em] text-sand-dim">
-                        {updateCheck.localCommit} → {updateCheck.remoteCommit} · pull with{' '}
-                        <span className="text-sand">git pull</span>, then restart.
+                        {updateCheck.localCommit} → {updateCheck.remoteCommit}
                       </div>
+                      <button
+                        type="button"
+                        disabled={applying}
+                        onClick={() => {
+                          setApplying(true)
+                          setApplyResult(null)
+                          void api
+                            .applyUpdate()
+                            .then(
+                              (r) => {
+                                setApplyResult({
+                                  ok: true,
+                                  text: r.updated
+                                    ? `Updated ${r.from} → ${r.to}.` +
+                                      (r.needsRestart
+                                        ? ' The server changed, so restart it to finish — every agent chat is a child of that process, so they will stop with it.'
+                                        : ' Reload the page to pick it up.')
+                                    : r.message ?? 'Already up to date.',
+                                })
+                                void handleCheckUpdates()
+                              },
+                              (err: unknown) =>
+                                setApplyResult({
+                                  ok: false,
+                                  text:
+                                    err instanceof Error ? err.message : 'Could not update.',
+                                }),
+                            )
+                            .finally(() => setApplying(false))
+                        }}
+                        className="mo-button mt-3 flex w-full items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Download
+                          className={`h-3.5 w-3.5 ${applying ? 'animate-pulse' : ''}`}
+                          aria-hidden="true"
+                        />
+                        {applying ? 'Updating…' : 'Update now'}
+                      </button>
                     </div>
                   ))}
+                {applyResult !== null && (
+                  <p
+                    role={applyResult.ok ? undefined : 'alert'}
+                    className={`mt-3 border px-3 py-2 font-mono text-[10px] leading-relaxed tracking-[0.06em] ${
+                      applyResult.ok ? 'border-hairline text-sand' : 'border-[#cf6b52] text-[#cf6b52]'
+                    }`}
+                  >
+                    {applyResult.text}
+                  </p>
+                )}
               </div>
                 </>
               )}

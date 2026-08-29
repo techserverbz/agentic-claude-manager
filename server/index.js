@@ -918,6 +918,97 @@ app.post('/api/floors/:id/workspace', requireLoopback, (req, res) => {
   }
 })
 
+/* — UPDATE NOW —
+ *
+ *  The check above answers "is there a newer version"; this is the other half.
+ *  Nothing here is destructive by design: the pull is --ff-only, so a checkout
+ *  that has diverged is REFUSED rather than merged, and a dirty tree is refused
+ *  rather than stashed. Being one version behind is a much better outcome than
+ *  losing work the human never committed.
+ */
+/** runGit, but reporting failure instead of throwing — this route wants to
+ *  collect step-by-step output rather than abort on the first non-zero exit. */
+async function git(args, opts = {}) {
+  try {
+    return { ok: true, out: await runGit(args, opts.timeout ?? 120000), err: '' }
+  } catch (err) {
+    return { ok: false, out: '', err: String((err && err.message) || 'git failed') }
+  }
+}
+
+app.post('/api/updates/apply', requireLoopback, async (req, res) => {
+  const steps = []
+  const run = async (label, args, opts) => {
+    const r = await git(args, opts)
+    steps.push({ label, ok: r.ok, out: (r.out || r.err).slice(0, 4000) })
+    return r
+  }
+
+  const branchR = await git(['rev-parse', '--abbrev-ref', 'HEAD'])
+  const branch = branchR.out || 'main'
+
+  const dirty = await git(['status', '--porcelain'])
+  if (dirty.out !== '') {
+    res.status(409).json({
+      error:
+        'You have uncommitted changes here. Updating would have to touch them, so commit or stash first — this refuses rather than guessing.',
+      files: dirty.out.split('\n').slice(0, 20),
+    })
+    return
+  }
+
+  const before = await git(['rev-parse', 'HEAD'])
+  const pulled = await run('git pull --ff-only', ['pull', '--ff-only', 'origin', branch])
+  if (!pulled.ok) {
+    res.status(409).json({
+      error:
+        'Could not fast-forward. This checkout has commits the remote does not, so it needs merging by hand rather than by a button.',
+      steps,
+    })
+    return
+  }
+  const after = await git(['rev-parse', 'HEAD'])
+
+  if (before.out === after.out) {
+    res.json({ updated: false, message: 'Already up to date.', steps })
+    return
+  }
+
+  /* Only reinstall when the lockfile actually moved — npm install on every
+     update turns a two-second pull into a two-minute one. */
+  const touched = await git(['diff', '--name-only', before.out, after.out])
+  const files = touched.out.split('\n')
+  const needsInstall = files.some((f) => /(^|\/)(package-lock\.json|package\.json)$/.test(f))
+  const needsBuild = files.some((f) => f.startsWith('frontend/'))
+
+  const npm = (args) =>
+    new Promise((resolve) => {
+      execFile(
+        process.platform === 'win32' ? 'npm.cmd' : 'npm',
+        args,
+        { cwd: REPO_ROOT, windowsHide: true, maxBuffer: 8 * 1024 * 1024, shell: process.platform === 'win32' },
+        (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout ?? '') + String(stderr ?? '') }),
+      )
+    })
+
+  if (needsInstall) {
+    const r = await npm(['install'])
+    steps.push({ label: 'npm install', ok: r.ok, out: r.out.slice(-2000) })
+  }
+  if (needsBuild) {
+    const r = await npm(['run', 'build', '-w', 'frontend'])
+    steps.push({ label: 'npm run build -w frontend', ok: r.ok, out: r.out.slice(-2000) })
+  }
+
+  res.json({
+    updated: true,
+    from: before.out.slice(0, 7),
+    to: after.out.slice(0, 7),
+    needsRestart: files.some((f) => f.startsWith('server/')),
+    steps,
+  })
+})
+
 /* — WHICH AGENTS HAVE ACTUALLY WRITTEN ANYTHING —
  *
  *  claude creates a session's .jsonl on the FIRST exchange, not when the process
