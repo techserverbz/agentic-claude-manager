@@ -22,10 +22,16 @@ $ports = '4840,5840,4811,5811'
 #        so we poll /api/health (the first-run / post-update build can take ~a
 #        minute) and only then open http://localhost:4840. No Vite to wait on. ---
 $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+# A SEPARATE Chrome profile, because Chrome refuses remote debugging on the
+# default user-data-dir. Derived from the environment rather than hardcoded:
+# this path used to name one machine's home folder, so a clone opened Chrome
+# against a directory that did not exist.
+$chromeProfile = Join-Path $env:USERPROFILE 'ChromeDebug'
+$chromeProfile = $chromeProfile.Replace('\', '/')
 if (-not $NoBrowser -and (Test-Path $chrome)) {
   Start-Process powershell -WindowStyle Hidden -ArgumentList @(
     '-NoProfile','-Command',
-    "for(`$i=0;`$i -lt 150;`$i++){ try{ if((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://localhost:4840/api/health').StatusCode -eq 200){break} }catch{}; Start-Sleep 1 }; Start-Process '$chrome' @('--remote-debugging-port=9222','--user-data-dir=C:/Users/Shubham(Code)/ChromeDebug','http://localhost:4840')"
+    "for(`$i=0;`$i -lt 150;`$i++){ try{ if((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://localhost:4840/api/health').StatusCode -eq 200){break} }catch{}; Start-Sleep 1 }; Start-Process '$chrome' @('--remote-debugging-port=9222','--user-data-dir=$chromeProfile','http://localhost:4840')"
   ) | Out-Null
 }
 
