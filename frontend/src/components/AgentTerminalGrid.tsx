@@ -109,6 +109,7 @@ export function AgentTerminalGrid({
   liveSessionIds,
   selFloorId,
   selAgentId,
+  agentCommand,
   /** 'grid' shows every cell; 'single' shows only the selected one, full size */
   layout,
   /** whether this whole surface is on screen at all */
@@ -135,6 +136,8 @@ export function AgentTerminalGrid({
   liveSessionIds: string[]
   selFloorId: string | null
   selAgentId: string | null
+  /** applied to the pane matching the selection; every other pane ignores it */
+  agentCommand: { kind: 'terminal' | 'chat' | 'reconnect'; nonce: number } | null
   layout: 'grid' | 'single'
   visible: boolean
   windowCount: number
@@ -423,6 +426,10 @@ export function AgentTerminalGrid({
                      single layout there is only one pane and it is the selected
                      agent's. Exactly one cell is ever true either way. */
                   isFocused={visible && shown && (layout === 'grid' ? isFocusedSlot : isSel)}
+                  /* Only the selected pane hears it. Handing the same
+                     command to every pane would reconnect eight shells
+                     because somebody asked about one. */
+                  command={isSel ? agentCommand : null}
                   onSessionIdChange={(sid) => onSessionIdChange(key, sid)}
                   onActiveSessionsChange={(ids) => onActiveSessionsChange(key, ids)}
                 />

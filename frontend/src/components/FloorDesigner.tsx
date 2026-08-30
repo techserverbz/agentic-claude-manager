@@ -10,6 +10,7 @@ import {
 import {
   Background,
   BackgroundVariant,
+  ConnectionLineType,
   Controls,
   Handle,
   Position,
@@ -157,6 +158,13 @@ function toEdges(agents: FloorAgent[]): Edge[] {
       id: `${a.reportsTo}->${a.id}`,
       source: a.reportsTo as string,
       target: a.id,
+      /* Orthogonal, not bezier. A reporting line is a statement about
+         STRUCTURE — who answers to whom — and a curve reads as a flow,
+         something moving along it. Right angles also stay legible when six
+         reports fan out of one boss: parallel runs separate cleanly where
+         curves cross each other at shallow angles and smear together. */
+      type: 'smoothstep',
+      pathOptions: { borderRadius: 2 },
       style: { stroke: 'var(--color-brass)', strokeWidth: 1.5 },
     }))
 }
@@ -384,6 +392,10 @@ function FloorCanvas({ floor, theme }: { floor: Floor; theme: Theme }) {
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          /* the same shape while you DRAG a new connection, so the line you
+             are drawing looks like the line you will get */
+          connectionLineType={ConnectionLineType.SmoothStep}
+          defaultEdgeOptions={{ type: 'smoothstep' }}
           onNodesChange={handleNodesChange}
           onConnect={onConnect}
           onNodeClick={(_e, n) => setSelectedId(n.id)}

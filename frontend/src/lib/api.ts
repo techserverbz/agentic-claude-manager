@@ -1056,6 +1056,59 @@ export const api = {
     })
   },
 
+  /** A floor's own goals, with their sub-goals nested. Read from THIS app's
+   *  store, never from the CRM — they are there with the CRM stopped. */
+  async getFloorGoals(floorId: string): Promise<{
+    goals: unknown[]
+    scope: { targetType: string; targetId: string | null } | null
+    crmConfigured: boolean
+  }> {
+    return request(`/api/floors/${floorId}/goals`)
+  },
+
+  async createFloorGoal(
+    floorId: string,
+    body: { title: string; parentId?: string; description?: string },
+  ): Promise<{ goal: unknown }> {
+    return request(`/api/floors/${floorId}/goals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+
+  async updateFloorGoal(
+    floorId: string,
+    goalId: string,
+    patch: Record<string, unknown>,
+  ): Promise<{ goal: unknown }> {
+    return request(`/api/floors/${floorId}/goals/${goalId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+  },
+
+  async deleteFloorGoal(floorId: string, goalId: string): Promise<{ removed: string[] }> {
+    return request(`/api/floors/${floorId}/goals/${goalId}`, { method: 'DELETE' })
+  },
+
+  /** Push local goals to the CRM and bring back any it has that we do not.
+   *  Only meaningful once the floor is attached to something. */
+  async syncFloorGoals(floorId: string): Promise<{
+    pushed: number
+    updated: number
+    pulled: number
+    failed: string[]
+    goals: unknown[]
+  }> {
+    return request(`/api/floors/${floorId}/goals/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  },
+
   /** What this workflow's own settings.json says, and whether the roster
    *  hook is in it. */
   async getFloorHooks(floorId: string): Promise<{

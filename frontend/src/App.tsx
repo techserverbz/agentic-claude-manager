@@ -240,6 +240,22 @@ export default function App() {
     setAgentSel({ floorId, agentId })
     if (openChat) setOpenChatNonce((n) => n + 1)
   }
+
+  /* A command aimed at ONE agent's pane. The nonce is what makes it fire:
+     asking for the terminal twice in a row is two requests, and a plain
+     value would look unchanged the second time. */
+  const [agentCommand, setAgentCommand] = useState<{
+    kind: 'terminal' | 'chat' | 'reconnect'
+    nonce: number
+  } | null>(null)
+  const handleAgentCommand = (floorId: string, agentId: string, kind: 'terminal' | 'chat' | 'reconnect') => {
+    if (!floorId || !agentId) return
+    setAgentSel({ floorId, agentId })
+    setAgentCommand((c) => ({ kind, nonce: (c?.nonce ?? 0) + 1 }))
+    /* reconnect acts on a pane that is already mounted; the other two
+       need the chat open before there is anything to act on */
+    if (kind !== 'reconnect') setOpenChatNonce((n) => n + 1)
+  }
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   /* non-null = the project modal is open in EDIT mode for this id */
   const [editProjectId, setEditProjectId] = useState<string | null>(null)
@@ -1747,6 +1763,7 @@ export default function App() {
           selFloorId={agentSel?.floorId ?? null}
           selAgentId={agentSel?.agentId ?? null}
           onSelectAgent={handleSelectAgent}
+          onAgentCommand={handleAgentCommand}
           onRenameFloor={handleRenameFloor}
           onAttachFloorScope={handleAttachScope}
           onAddFloor={handleAddFloor}
@@ -1793,6 +1810,7 @@ export default function App() {
           selFloorId={agentSel?.floorId ?? null}
           selAgentId={agentSel?.agentId ?? null}
           onSelectAgent={handleSelectAgent}
+          agentCommand={agentCommand}
           openChatSignal={openChatNonce}
           agentSlots={agentSlots}
           onAgentSlotsChange={setAgentSlots}

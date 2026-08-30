@@ -1001,18 +1001,41 @@ export function handleTerminalConnection(ws, { project, sessionId, forceRestart 
 // at the point of use, and not depend on some caller having validated already.
 const SPAWN_MODELS = new Set(['opus', 'sonnet', 'haiku'])
 
-function buildHeadlessCommand(freshId, briefPath, model = '') {
-  const idFlag = `--session-id ${freshId}`
+/**
+ * The command that starts an agent's chat.
+ *
+ * `resume` is the difference between picking a conversation back up and
+ * losing it. Without it this only ever built `--session-id <id>`, which the
+ * CLI refuses on an id that already has a transcript — so the only way to
+ * reopen an agent was to mint a NEW id, and every /exit or restart threw the
+ * history away. buildCommand() above has had the resume path all along; the
+ * agent chats simply never used it.
+ *
+ * The fallback matters as much as the resume: --resume fails on a session
+ * that was opened but never typed into, because claude writes the .jsonl on
+ * the first exchange. Falling back to --session-id on the SAME id (never a
+ * bare `claude`, which would mint a random one and orphan the chat) means the
+ * agent keeps its identity either way.
+ */
+function buildHeadlessCommand(freshId, briefPath, model = '', resume = false) {
   // No --model at all when unset: letting the CLI choose is a different thing
   // from pinning it to today's default, and only the first survives an upgrade.
   const modelFlag = SPAWN_MODELS.has(model) ? ` --model ${model}` : ''
-  if (!briefPath) return `claude ${idFlag}${modelFlag} --append-system-prompt '${SIBLING_PROMPT}'`
+  // -LiteralPath so a path containing [ ] (a real possibility under a folder
+  // like "Munder Difflin (v2)") is not treated as a wildcard.
+  const promptFlag = !briefPath
+    ? `--append-system-prompt '${SIBLING_PROMPT}'`
+    : IS_WINDOWS
+      ? `--append-system-prompt (Get-Content -Raw -LiteralPath '${briefPath}')`
+      : `--append-system-prompt "$(cat '${briefPath}')"`
+
+  const fresh = `claude --session-id ${freshId}${modelFlag} ${promptFlag}`
+  if (!resume) return fresh
   if (IS_WINDOWS) {
-    // -LiteralPath so a path containing [ ] (a real possibility under a folder
-    // like "Munder Difflin (v2)") is not treated as a wildcard.
-    return `claude ${idFlag}${modelFlag} --append-system-prompt (Get-Content -Raw -LiteralPath '${briefPath}')`
+    // PowerShell 5.1 has no || — chain on $LASTEXITCODE, as buildCommand does.
+    return `claude --resume "${freshId}"${modelFlag} ${promptFlag}; if ($LASTEXITCODE -ne 0) { ${fresh} }`
   }
-  return `claude ${idFlag}${modelFlag} --append-system-prompt "$(cat '${briefPath}')"`
+  return `claude --resume "${freshId}"${modelFlag} ${promptFlag} || ${fresh}`
 }
 
 /**
@@ -1027,7 +1050,7 @@ function buildHeadlessCommand(freshId, briefPath, model = '') {
  * @returns {{sessionId: string, token: string, created: boolean, pid: number|null}}
  * @throws {Error} when the project is missing or the pty cannot be spawned
  */
-export function ensureSession({ project, sessionId = null, briefPath = null, model = '', cols, rows } = {}) {
+export function ensureSession({ project, sessionId = null, briefPath = null, model = '', resume = false, cols, rows } = {}) {
   if (!project || !project.id || !project.fileDir) {
     throw new Error('ensureSession: a project with id and fileDir is required')
   }
@@ -1073,8 +1096,8 @@ export function ensureSession({ project, sessionId = null, briefPath = null, mod
     term = pty.spawn(
       IS_WINDOWS ? 'powershell.exe' : 'bash',
       IS_WINDOWS
-        ? ['-Command', buildHeadlessCommand(liveId, briefPath, model)]
-        : ['-c', buildHeadlessCommand(liveId, briefPath, model)],
+        ? ['-Command', buildHeadlessCommand(liveId, briefPath, model, resume)]
+        : ['-c', buildHeadlessCommand(liveId, briefPath, model, resume)],
       {
         name: 'xterm-256color',
         cols: validDim(cols) ?? TERMINAL_DEFAULT_COLS,

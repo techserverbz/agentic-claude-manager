@@ -8,6 +8,7 @@ import {
   Sparkles,
   Users2,
   KanbanSquare,
+  Target,
   ListTodo,
   MessageSquare,
   Network,
@@ -20,6 +21,7 @@ import { CrmKanban } from './CrmKanban'
 import { FloorMemory } from './FloorMemory'
 import { FloorPreamble } from './FloorPreamble'
 import { FloorHooks } from './FloorHooks'
+import { FloorGoals } from './FloorGoals'
 import { PromptKanban } from './PromptKanban'
 import { FloorEquipment } from './FloorEquipment'
 import { AgentTerminalGrid, type GridTab } from './AgentTerminalGrid'
@@ -65,6 +67,7 @@ type PanelTab =
   | 'design'
   | 'preamble'
   | 'hooks'
+  | 'goals'
   | 'session'
   | 'kanban'
   | 'prompts'
@@ -90,6 +93,10 @@ const TABS: { id: PanelTab; label: string; icon: typeof Network }[] = [
   /* Two boards, named apart. 'Kanban' alone stopped being a name the moment
      there were two of them — and they are genuinely different things: one is
      the company's live CRM goals, the other is this floor's own queue. */
+  /* Ahead of the CRM board on purpose: these are the floor's OWN goals and
+     they are readable with the CRM switched off, which the board beside
+     them is not. */
+  { id: 'goals', label: 'Goals', icon: Target },
   { id: 'kanban', label: 'Goal Kanban', icon: KanbanSquare },
   { id: 'prompts', label: 'Prompt Kanban', icon: ListTodo },
   { id: 'memory', label: 'Memory', icon: BrainCircuit },
@@ -185,6 +192,7 @@ export function AgentWorkflowPanel({
   selAgentId,
   onSelectAgent,
   openChatSignal,
+  agentCommand,
   theme,
   onOpenAgentChat,
   onAttachScope,
@@ -214,6 +222,8 @@ export function AgentWorkflowPanel({
   onSelectAgent: (floorId: string, agentId: string, openChat?: boolean) => void
   /** bumped when a selection asked to land in the chat rather than just select */
   openChatSignal: number
+  /** a verb for the selected agent's pane — see App.handleAgentCommand */
+  agentCommand: { kind: 'terminal' | 'chat' | 'reconnect'; nonce: number } | null
   theme: Theme
   /** spawn-or-reuse this agent's chat; resolves once the agent carries a sessionId */
   onOpenAgentChat: (floorId: string, agentId: string) => Promise<void>
@@ -527,6 +537,7 @@ export function AgentWorkflowPanel({
       liveSessionIds={liveSessionIds}
       selFloorId={selFloorId}
       selAgentId={selAgentId}
+      agentCommand={agentCommand}
       layout={mode === 'multipane' ? 'grid' : 'single'}
       visible={mode === 'multipane' || tab === 'session'}
       windowCount={effectiveWindows}
@@ -722,7 +733,12 @@ export function AgentWorkflowPanel({
             >
               <FloorEquipment
                 view={v}
-                floors={workflowFloors}
+                /* THIS floor, not every workflow floor. Every other tab in
+                   this panel — Preamble, Hooks, Memory, both boards — is scoped
+                   to the selected floor, and Agents listing all of them made it
+                   the odd one out: you click into the CRM workflow and are shown
+                   people who work somewhere else. */
+                floors={selectedFloor === null ? [] : [selectedFloor]}
                 liveSessionIds={liveSessionIds}
                 onSelectAgent={(floorId, agentId) => {
                   selectAgent(floorId, agentId)
@@ -770,6 +786,18 @@ export function AgentWorkflowPanel({
 
           {/* — Hooks: this workflow's own settings.json. Same mounting rule
                as the rest — layered and inert, never unmounted. — */}
+          {/* — Goals: this floor's own, offline. Same mounting rule as the
+               rest — layered and inert, never unmounted. — */}
+          <section
+            aria-label="Floor goals"
+            aria-hidden={tab === 'goals' ? undefined : true}
+            className={`absolute inset-0 bg-surface ${
+              tab === 'goals' ? 'z-20' : 'invisible pointer-events-none z-0'
+            }`}
+          >
+            <FloorGoals floor={selectedFloor} />
+          </section>
+
           <section
             aria-label="Floor hooks"
             aria-hidden={tab === 'hooks' ? undefined : true}

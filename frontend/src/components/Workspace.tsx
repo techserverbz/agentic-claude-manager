@@ -84,6 +84,7 @@ export function Workspace({
   selFloorId,
   selAgentId,
   onSelectAgent,
+  agentCommand,
   openChatSignal,
   agentSlots,
   onAgentSlotsChange,
@@ -158,6 +159,8 @@ export function Workspace({
   selFloorId: string | null
   selAgentId: string | null
   onSelectAgent: (floorId: string, agentId: string, openChat?: boolean) => void
+  /** a verb aimed at the selected agent's pane; the nonce makes a repeat fire */
+  agentCommand: { kind: 'terminal' | 'chat' | 'reconnect'; nonce: number } | null
   /** bumped when a selection asked to land in the chat, not just select */
   openChatSignal: number
   /** which agent is in which window on the agent grid — owned by App so a
@@ -845,6 +848,7 @@ export function Workspace({
                 onAgentSlotsChange={onAgentSlotsChange}
                 onPatchAgent={onPatchAgent}
                 onRemoveAgent={onRemoveAgent}
+                agentCommand={agentCommand}
                 onSetFloorPrompt={onSetFloorPrompt}
                 onRefreshFloors={onRefreshFloors}
                 theme={theme}

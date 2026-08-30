@@ -171,6 +171,7 @@ export function Sidebar({
   selFloorId,
   selAgentId,
   onSelectAgent,
+  onAgentCommand,
   onRenameFloor,
   onAttachFloorScope,
   onAddFloor,
@@ -271,6 +272,13 @@ export function Sidebar({
   selFloorId: string | null
   selAgentId: string | null
   onSelectAgent: (floorId: string, agentId: string, openChat?: boolean) => void
+  /** a verb for one agent's pane: show its terminal, its chat, or reconnect
+   *  a shell that dropped */
+  onAgentCommand: (
+    floorId: string,
+    agentId: string,
+    kind: 'terminal' | 'chat' | 'reconnect',
+  ) => void
   /** rename a floor — the name is the only freely editable thing about one */
   onRenameFloor: (floorId: string, name: string) => void
   /** attach a floor to a CRM scope — write-once, enforced server-side */
@@ -763,6 +771,7 @@ export function Sidebar({
     | { kind: 'group-chat'; groupId: string; sessionId: string; cwd: string; current: string }
     | { kind: 'add'; sessionId: string; cwd: string; current: string }
     | { kind: 'floor'; floorId: string; current: string }
+    | { kind: 'agent'; floorId: string; agentId: string; current: string }
   const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null)
   const [editing, setEditing] = useState<MenuTarget | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -1342,6 +1351,19 @@ export function Sidebar({
                                          live chat and only starts one when the
                                          agent has none. */
                                       onSelect={() => onSelectAgent(f.id, a.id, true)}
+                                      /* The floor row above has had a menu
+                                         since it was written; its agents never
+                                         did, so right-clicking a name fell
+                                         through to the browser's own menu and
+                                         looked broken. */
+                                      onContextMenu={(e) =>
+                                        openMenu(e, {
+                                          kind: 'agent',
+                                          floorId: f.id,
+                                          agentId: a.id,
+                                          current: a.name,
+                                        })
+                                      }
                                     />
                                   </li>
                                 ))}
@@ -2949,6 +2971,109 @@ export function Sidebar({
               </button>
             </>
           )}
+          {menu.target.kind === 'agent' &&
+            (() => {
+              /* Narrowed into a local: `menu` is state, so TypeScript
+                 re-widens menu.target on every access inside a closure. */
+              const t = menu.target
+              if (t.kind !== 'agent') return null
+              const agent = floors
+                .find((x) => x.id === t.floorId)
+                ?.agents.find((a) => a.id === t.agentId)
+              const sid = agent?.sessionId ?? null
+              return (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelectAgent(t.floorId, t.agentId, true)
+                      setMenu(null)
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                  >
+                    <MessageSquare className="h-3 w-3" aria-hidden="true" />
+                    Open chat
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onAgentCommand(t.floorId, t.agentId, 'terminal')
+                      setMenu(null)
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                  >
+                    <TerminalIcon className="h-3 w-3" aria-hidden="true" />
+                    Open terminal
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      /* The shell is dead until something restarts it, so this
+                         also switches the pane to the terminal — reconnecting
+                         a view you cannot see is indistinguishable from
+                         nothing happening. */
+                      onAgentCommand(t.floorId, t.agentId, 'reconnect')
+                      setMenu(null)
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                  >
+                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                    Reconnect terminal
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      /* select WITHOUT opening: the plain click already
+                         opens the chat, so the menu is the only way to look
+                         at somebody on the canvas without starting one. */
+                      onSelectAgent(t.floorId, t.agentId, false)
+                      setMenu(null)
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                  >
+                    <Eye className="h-3 w-3" aria-hidden="true" />
+                    Show on the floor
+                  </button>
+                  {sid !== null && (
+                    <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(sid)
+                          setMenu(null)
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                      >
+                        <Copy className="h-3 w-3" aria-hidden="true" />
+                        Copy chat id
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          /* Server-side reveal: it derives the path from the
+                             floor's workspace, so a floor without one simply
+                             refuses rather than opening something arbitrary. */
+                          void api
+                            .revealFloorPath(t.floorId, { what: 'transcript', sessionId: sid })
+                            .catch(() => {})
+                          setMenu(null)
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left font-mono text-[10px] uppercase tracking-[0.18em] text-sand transition-colors duration-150 hover:bg-surface-2/50 hover:text-brass"
+                      >
+                        <FolderOpen className="h-3 w-3" aria-hidden="true" />
+                        Open file location
+                      </button>
+                    </>
+                  )}
+                </>
+              )
+            })()}
           {menu.target.kind === 'project' && (
             <>
               <button

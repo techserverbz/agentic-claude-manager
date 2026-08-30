@@ -67,6 +67,7 @@ export function SessionPane({
   headerLead,
   headerActions,
   hideTitle,
+  command,
 }: {
   project: Project | null
   sessionId: string | null
@@ -103,6 +104,9 @@ export function SessionPane({
   /** suppress the pane's own chat-name/project line — for callers whose
    *  headerLead already says what this pane is */
   hideTitle?: boolean
+  /** an outside verb for THIS pane: show the terminal, show the chat, or
+   *  reconnect a dropped shell. Null for panes nobody is commanding. */
+  command?: { kind: 'terminal' | 'chat' | 'reconnect'; nonce: number } | null
 }) {
   /* stable unique key for THIS pane's 'new' (not-yet-minted) session — each pane
      gets its own so multiple new-chat tabs don't share one server-side pty */
@@ -118,6 +122,22 @@ export function SessionPane({
   )
   /* user-initiated reconnect for the visible shell, hosted in the merged header */
   const [reconnectNonce, setReconnectNonce] = useState(0)
+  /* Outside verbs (the sidebar's agent menu). Keyed on the nonce so the
+     same request twice is two events; the effect deliberately does NOT
+     depend on `command` itself, which is a fresh object every render. */
+  const commandNonce = command?.nonce ?? 0
+  const commandKind = command?.kind ?? null
+  useEffect(() => {
+    if (commandNonce === 0 || commandKind === null) return
+    if (commandKind === 'terminal') setView('terminals')
+    else if (commandKind === 'chat') setView('chat')
+    else if (commandKind === 'reconnect') {
+      /* a dropped shell is only reachable from the terminal view, so go
+         there as well as reconnecting — otherwise the fix is invisible */
+      setView('terminals')
+      setReconnectNonce((n) => n + 1)
+    }
+  }, [commandNonce, commandKind])
 
   const liveChat = view === 'chat' && project !== null
   const liveTerminal = view === 'terminals' && project !== null
@@ -310,7 +330,12 @@ export function SessionPane({
           </div>
         )}
         {/* reconnect ONLY when the shell died — no live/status text in the bar */}
-        {view === 'terminals' && (termStatus === 'exited' || termStatus === 'closed') && (
+        {/* Reconnect lives here rather than only in a menu: a dropped shell
+            is something you notice by looking at it, and the fix belongs
+            where you noticed. 'connecting' is excluded on purpose — it is
+            already on its way and a second attempt would race it. */}
+        {view === 'terminals' &&
+          (termStatus === 'exited' || termStatus === 'closed') && (
           <button
             type="button"
             onClick={() => setReconnectNonce((n) => n + 1)}

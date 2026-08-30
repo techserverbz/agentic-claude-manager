@@ -73,6 +73,16 @@ import {
   deletePromptsForFloor,
   markSessionsLostAtBoot,
 } from './lib/prompts.js'
+import {
+  goalTree,
+  listGoals,
+  createGoal,
+  updateGoal,
+  deleteGoal,
+  deleteGoalsForFloor,
+  upsertFromCrm,
+  persist,
+} from './lib/goals.js'
 import { listFloors, getFloor, createFloor, updateFloor, deleteFloor, setAgentSession, setFloorScope, findFloorBySession, addAgent } from './lib/floors.js'
 import {
   listWorkflows,
@@ -793,6 +803,167 @@ app.post('/api/floors', (req, res) => {
   }
 })
 
+/* — A FLOOR'S GOALS —
+ *
+ *  Local first, always. These routes never touch the CRM: they read and write
+ *  server/data/goals.json, so a floor's goals are there with the CRM stopped,
+ *  unreachable or logged out. /sync below is the only door between the two, and
+ *  it is a button somebody presses rather than something a read depends on.
+ */
+app.get('/api/floors/:id/goals', (req, res) => {
+  const floor = getFloor(req.params.id)
+  if (!floor) {
+    res.status(404).json({ error: 'No such floor' })
+    return
+  }
+  res.json({
+    goals: goalTree(floor.id),
+    /* the Sync button only makes sense once the floor is pointed at something
+       in the CRM, so the UI is told rather than left to guess */
+    scope: floor.crmScope ?? null,
+    crmConfigured: crmConfigured(),
+  })
+})
+
+app.post('/api/floors/:id/goals', requireLoopback, (req, res) => {
+  const floor = getFloor(req.params.id)
+  if (!floor) {
+    res.status(404).json({ error: 'No such floor' })
+    return
+  }
+  const out = createGoal(floor.id, req.body ?? {})
+  if (!out.ok) {
+    res.status(400).json({ error: out.reason })
+    return
+  }
+  res.json({ goal: out.goal })
+})
+
+app.patch('/api/floors/:floorId/goals/:id', requireLoopback, (req, res) => {
+  const out = updateGoal(req.params.id, req.body ?? {})
+  if (!out.ok) {
+    res.status(out.reason === 'No such goal' ? 404 : 400).json({ error: out.reason })
+    return
+  }
+  res.json({ goal: out.goal })
+})
+
+app.delete('/api/floors/:floorId/goals/:id', requireLoopback, (req, res) => {
+  const out = deleteGoal(req.params.id)
+  if (!out.ok) {
+    res.status(404).json({ error: out.reason })
+    return
+  }
+  res.json({ removed: out.removed })
+})
+
+/* — SYNC WITH THE CRM —
+ *
+ *  Two directions in one press:
+ *
+ *    PUSH  every local goal the CRM has never seen (no crmGoalId) is created
+ *          there, and every goal it HAS seen is updated. crmGoalId is what
+ *          makes that idempotent — press the button twice and nothing is
+ *          duplicated, because the second press has an id to update.
+ *    PULL  every goal on the floor's CRM board that we hold no copy of becomes
+ *          a local goal, matched on crmGoalId for the same reason.
+ *
+ *  Sub-goals are pushed as ordinary CRM goals. The CRM's own parent/child
+ *  field is not something this has been tested against, so the nesting is kept
+ *  HERE and the CRM sees a flat list — a wrong guess at that field would file
+ *  work under the wrong parent, which is worse than a flat list.
+ *
+ *  Nothing is deleted on either side. A goal missing from the CRM might have
+ *  been deleted there, or might simply not have been pushed yet, and a sync
+ *  button that can destroy work is a button people stop pressing.
+ */
+app.post('/api/floors/:id/goals/sync', requireLoopback, async (req, res) => {
+  const floor = getFloor(req.params.id)
+  if (!floor) {
+    res.status(404).json({ error: 'No such floor' })
+    return
+  }
+  if (!floor.crmScope) {
+    res.status(409).json({
+      error:
+        'This floor is not attached to anything in the CRM yet, so there is nothing to sync with. Attach it to a product, service or project first.',
+    })
+    return
+  }
+  if (!crmConfigured()) {
+    res.status(409).json({ error: 'The CRM connection is not configured on this machine.' })
+    return
+  }
+
+  const { targetType, targetId } = floor.crmScope
+  const pushed = []
+  const updated = []
+  const pulled = []
+  const failed = []
+
+  const local = listGoals(floor.id)
+
+  for (const g of local) {
+    try {
+      if (g.crmGoalId) {
+        await crmUpdateGoal(g.crmGoalId, {
+          title: g.title,
+          description: g.description,
+          status: g.status,
+          priority: g.priority,
+        })
+        updateGoal(g.id, { syncedAt: new Date().toISOString() })
+        updated.push(g.title)
+      } else {
+        const made = await crmCreateGoal({
+          title: g.title,
+          description: g.description,
+          status: g.status,
+          priority: g.priority,
+          targetType,
+          targetId,
+          servicePillar: g.servicePillar || undefined,
+          dueDate: g.dueDate || undefined,
+        })
+        const newId = made?.id ?? made?.goal?.id ?? null
+        if (newId) {
+          updateGoal(g.id, { crmGoalId: String(newId), syncedAt: new Date().toISOString() })
+          pushed.push(g.title)
+        } else {
+          failed.push(`${g.title}: the CRM accepted it but returned no id`)
+        }
+      }
+    } catch (err) {
+      failed.push(`${g.title}: ${(err && err.message) || 'failed'}`)
+    }
+  }
+
+  try {
+    const board = await crmBoard(targetType, targetId)
+    const columns = board?.columns ?? {}
+    for (const list of Object.values(columns)) {
+      for (const remote of Array.isArray(list) ? list : []) {
+        const known = listGoals(floor.id).some((g) => g.crmGoalId === String(remote.id))
+        if (known) continue
+        const made = upsertFromCrm(floor.id, remote)
+        if (made) pulled.push(made.title)
+      }
+    }
+    persist()
+  } catch (err) {
+    failed.push(`reading the CRM board: ${(err && err.message) || 'failed'}`)
+  }
+
+  res.json({
+    pushed: pushed.length,
+    updated: updated.length,
+    pulled: pulled.length,
+    failed,
+    goals: goalTree(floor.id),
+    syncedAt: new Date().toISOString(),
+  })
+})
+
 /* — A WORKFLOW'S OWN FOLDER —
  *
  *  Two directories decide what an agent on this floor actually is:
@@ -1358,6 +1529,9 @@ app.delete('/api/floors/:id', (req, res) => {
      cleanup existed. Best effort: a floor that deleted must not un-delete
      because its queue would not. */
   deletePromptsForFloor(req.params.id)
+  /* and its goals: they are floor-scoped and nothing else can reach them, so
+     leaving them behind would be a slow leak of records nobody can see. */
+  deleteGoalsForFloor(req.params.id)
   res.json({ ok: true })
 })
 
@@ -1592,6 +1766,7 @@ function openAgentChat({ floor, agent, project }) {
     // we mint a fresh id and rebind below: the old chat stays in the sidebar,
     // the agent simply points at its current one.
     let sessionId = agent.sessionId || randomUUID()
+    let resume = false
     if (agent.sessionId) {
       try {
         /* Fresh id if this project already holds a transcript for it (an
@@ -1606,7 +1781,15 @@ function openAgentChat({ floor, agent, project }) {
             p.id !== project.id &&
             existsSync(path.join(sessionsDirFor(p), `${agent.sessionId}.jsonl`)),
         )
-        if (usedHere || usedElsewhere) sessionId = randomUUID()
+        /* A transcript in THIS project is the conversation you were having.
+           Resume it. Minting a fresh id here — which is what this did — is
+           why typing /exit and reopening the agent came back with nothing:
+           the old chat was still on disk, just no longer the one the agent
+           pointed at. An id owned by ANOTHER project is a different matter
+           and still gets a new one, or the pane resolves to the wrong
+           directory. */
+        if (usedElsewhere) sessionId = randomUUID()
+        else if (usedHere) resume = true
       } catch {
         sessionId = randomUUID() // cannot tell — a fresh id is always startable
       }
@@ -1618,7 +1801,7 @@ function openAgentChat({ floor, agent, project }) {
     const briefPath = writeBrief(sessionId, composeAgentBrief({ floor, agent }))
     // The agent's model if its node pins one; unset means no --model flag at
     // all, exactly as the dispatch path treats an unpinned persona.
-    const spawned = ensureSession({ project, sessionId, briefPath, model: agent.model || '' })
+    const spawned = ensureSession({ project, sessionId, briefPath, model: agent.model || '', resume })
 
     // Persist the binding. Best-effort BY DESIGN: the process is already alive
     // by now, and a store that could not write must not be reported as a failed
