@@ -275,6 +275,9 @@ async function callTool(name, args) {
     }
     case 'prompt_board': {
       const r = await apiGet('/api/orchestrator/floor/prompts')
+      /* No 'convo' here on purpose. The board the BOSS reads is a list of
+         work; handing it "hi" and "ok" would spend its context on things
+         nobody is asking it to do. Those cards are for the human. */
       const cols = ['awaiting-input', 'todo', 'in-progress', 'review', 'done', 'later']
         .map((c) => {
           const cards = r.board.columns[c] ?? []

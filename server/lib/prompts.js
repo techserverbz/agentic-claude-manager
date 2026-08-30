@@ -39,6 +39,12 @@ export const PROMPT_COLUMNS = [
   'review',
   'done',
   'later',
+  /* Not work, and never was. Everything typed at a boss used to be judged
+     work or nothing, and the "nothing" half was thrown away — so "hi",
+     "how are you" and every one-word reply vanished. They are conversation,
+     which is a real category rather than an absence, and keeping them here
+     means the board is a record of what was SAID as well as what was asked. */
+  'convo',
 ]
 
 const MAX_TEXT = 8000
@@ -234,7 +240,10 @@ export function updatePrompt(id, patch = {}) {
      Do later is a contradiction: you have set the work aside, so it is with
      nobody. The agent's chat is left alone — stopping somebody mid-turn is a
      destructive act and belongs to a deliberate click, not to filing a card. */
-  if (patch.status === 'later') {
+  /* Same for 'convo': a line that turned out to be conversation is with
+     nobody either. Filing it away should not leave it looking like work
+     somebody is holding. */
+  if (patch.status === 'later' || patch.status === 'convo') {
     next.agentName = null
     next.sessionId = null
   }

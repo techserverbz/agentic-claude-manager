@@ -4588,15 +4588,24 @@ setHumanInputListener((sessionId, line) => {
     if (!found || !found.agent.isBoss) return
 
     const text = line.trim()
-    if (text.length < MIN_PROMPT_CHARS) return
-    if (NOT_A_PROMPT.has(text.toLowerCase())) return
-    /* slash commands and CLI control are addressed to the tool, not the team */
+    if (!text) return
+    /* Slash commands and CLI control are addressed to the TOOL, not the
+       team, and are still dropped outright — they are not conversation with
+       anybody. Same for a repeat, which is one thing said once. */
     if (text.startsWith('/') || text.startsWith('!') || text.startsWith('#')) return
     if (lastTyped.get(sessionId) === text) return
     lastTyped.set(sessionId, text)
 
+    /* The old test decided work-or-nothing and binned the nothing. It is
+       really work-or-conversation: "the second one" and "hi" are both real
+       things a person said, they just are not jobs. Short lines and the
+       stoplist now land in CONVO instead of disappearing. */
+    const isWork =
+      text.length >= MIN_PROMPT_CHARS && !NOT_A_PROMPT.has(text.toLowerCase())
+
     const out = createPrompt(found.floor.id, {
       text,
+      status: isWork ? 'todo' : 'convo',
       /* 'human' — because it IS the human, typing. The card is indistinguishable
          from one added with the button, which is right: both are the person
          asking for something. */
@@ -4604,7 +4613,8 @@ setHumanInputListener((sessionId, line) => {
     })
     if (out.ok) {
       console.log(
-        `[prompts] captured a prompt typed to ${found.agent.name} on "${found.floor.name}"`,
+        `[prompts] captured ${isWork ? 'a prompt' : 'conversation'} typed to ` +
+          `${found.agent.name} on "${found.floor.name}"`,
       )
     }
   } catch (err) {

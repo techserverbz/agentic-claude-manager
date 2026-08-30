@@ -67,6 +67,11 @@ const COLUMNS: { id: string; label: string }[] = [
      It stays on the board rather than being deleted: a parked task you cannot
      see is a task you have forgotten. */
   { id: 'later', label: 'Do later' },
+  /* Last, because it is the only column that is not work. Everything typed
+     at a boss lands on this board; the lines that are conversation rather
+     than a job collect here instead of being thrown away, so the queue
+     stays a queue and nothing said is lost. */
+  { id: 'convo', label: 'Just talking' },
 ]
 
 /* The same stripe the goal card uses, so priority reads identically on both
