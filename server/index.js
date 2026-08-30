@@ -83,7 +83,7 @@ import {
   upsertFromCrm,
   persist,
 } from './lib/goals.js'
-import { listFloors, getFloor, createFloor, updateFloor, deleteFloor, setAgentSession, setFloorScope, findFloorBySession, addAgent } from './lib/floors.js'
+import { listFloors, getFloor, createFloor, updateFloor, deleteFloor, setAgentSession, setFloorScope, findFloorBySession, addAgent, noteAutopilotRun, AUTOPILOT_LIMITS } from './lib/floors.js'
 import {
   listWorkflows,
   getWorkflow,
@@ -4640,6 +4640,229 @@ setHumanInputListener((sessionId, line) => {
   }
 })
 
+/* ————————————————————————— AUTOPILOT —————————————————————————
+ *
+ *  Every minute, look at each floor a human has ARMED and ask one question:
+ *  is anything actually stuck? If nothing is, do nothing — no card, no model
+ *  call, no cost. The board being quiet is the normal case and it must be free.
+ *
+ *  WHAT THIS DELIVERS, AND WHAT IT DELIBERATELY DOES NOT.
+ *
+ *  It writes a CARD to the floor's own prompt board. It does not type into
+ *  anybody's terminal. Typing is how the reference implementation's own docs
+ *  describe the hazard: our writeSessionInput sends the payload and then, 300ms
+ *  later, an unconditional carriage return (terminal.js), while the readiness
+ *  test we have matches claude's footer WHILE IT IS WORKING. An unattended
+ *  Enter lands on whatever modal happens to be open — including a tool
+ *  permission prompt, where the highlighted option is Yes. A card cannot press
+ *  anything. It sits on the board until a person or the boss picks it up, and
+ *  it is visible in the morning either way.
+ *
+ *  WHY EXPIRY RATHER THAN A SWITCH. `untilMs` is a moment, not a boolean. A
+ *  switch left on is a switch nobody remembers turning on; this lapses by
+ *  itself and a human has to keep choosing it.
+ *
+ *  WHY NEVER ON BOOT. markSessionsLostAtBoot() flags every in-flight card the
+ *  moment the server starts, and the board renders those as "re-assign me". A
+ *  sweep firing into that state would summarise a wall of work that is only
+ *  stranded because the app restarted ten seconds ago.
+ */
+const AUTOPILOT_TICK_MS = 60_000
+/* A session that has been silent this long while holding work is stalled
+   rather than thinking. Deliberately much longer than the 4s the sidebar dot
+   uses: a dot that is briefly wrong costs nothing, a card that is wrong is
+   noise on a board somebody has to read. */
+const STALLED_AFTER_MS = 10 * 60_000
+
+/** The local day, for the daily cap. Local rather than UTC because the cap is
+ *  about a person's day, and they will read the board in their own morning. */
+function dayStampOf(now) {
+  const d = new Date(now)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** What is stuck on this floor right now, in plain terms. Reads only state the
+ *  server already holds — no model, no network, so an idle floor is free. */
+function stuckReport(floor, states, now) {
+  const board = promptBoard(floor.id)
+  const cols = board.columns ?? {}
+  const all = Object.values(cols).flat()
+
+  const asking = all.filter((p) => p.status === 'awaiting-input')
+  const lost = all.filter((p) => p.sessionLost)
+  const stalled = all.filter((p) => {
+    if (p.status !== 'in-progress' || !p.sessionId || p.sessionLost) return false
+    /* Silent AND holding work. Either alone is ordinary: an agent with nothing
+       to do is silent, and an agent mid-answer holds work. */
+    if (states[p.sessionId] !== 'waiting') return false
+    const since = Date.parse(p.updatedAt ?? '') || 0
+    return since > 0 && now - since > STALLED_AFTER_MS
+  })
+
+  return { asking, lost, stalled, any: asking.length + lost.length + stalled.length }
+}
+
+/** One line per thing, so the card is readable at a glance in the morning. */
+function reportText(floor, r) {
+  const lines = [`Autopilot check on ${floor.name} — ${r.any} thing(s) need you.`]
+  for (const p of r.asking) {
+    lines.push(
+      `WAITING ON YOU${p.agentName ? ' (' + p.agentName + ')' : ''}: ` +
+        `${clipText(p.text, 120)}${p.question ? ' — asks: ' + clipText(p.question, 200) : ''}`,
+    )
+  }
+  for (const p of r.lost) {
+    lines.push(`CHAT DIED${p.agentName ? ' (' + p.agentName + ')' : ''}: ${clipText(p.text, 120)} — needs re-assigning`)
+  }
+  for (const p of r.stalled) {
+    lines.push(`STALLED${p.agentName ? ' (' + p.agentName + ')' : ''}: ${clipText(p.text, 120)} — silent for over 10 minutes`)
+  }
+  return lines.join('\n')
+}
+
+function clipText(s, n) {
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
+  return t.length > n ? t.slice(0, n) + '…' : t
+}
+
+function runAutopilotSweep() {
+  const now = Date.now()
+  const stamp = dayStampOf(now)
+  let states
+  try {
+    states = sessionStates()
+  } catch {
+    return
+  }
+
+  for (const floor of listFloors()) {
+    const a = floor.autopilot
+    /* Not armed, or the authorisation has lapsed. Lapsing is the normal way
+       this ends — nobody has to remember to switch it off. */
+    if (!a || !a.untilMs || a.untilMs <= now) continue
+    if (a.dayStamp === stamp && a.runsToday >= AUTOPILOT_LIMITS.maxRunsPerDay) continue
+
+    const lastRun = Date.parse(a.lastRunAt ?? '') || 0
+    if (lastRun > 0 && now - lastRun < a.everyMinutes * 60_000) continue
+
+    let report
+    try {
+      report = stuckReport(floor, states, now)
+    } catch (err) {
+      console.error(`[autopilot] could not read the board for ${floor.name}: ${err?.message}`)
+      continue
+    }
+
+    /* THE QUIET CASE, and the important one. Nothing is stuck, so nothing is
+       written and lastRunAt is NOT stamped — the next tick may look again
+       immediately. A sweep that reports "all clear" every half hour is a sweep
+       people stop reading, and the board is the wrong place to say nothing. */
+    if (report.any === 0) continue
+
+    const text = reportText(floor, report)
+
+    /* Don't say the same thing twice. The board is append-only from here, and
+       an unattended writer repeating itself every interval is how 500 cards
+       and a jammed board happen. */
+    const openScheduler = listPrompts(floor.id).filter(
+      (p) => p.createdBy === 'autopilot' && p.status !== 'done' && p.status !== 'later',
+    )
+    if (openScheduler.some((p) => p.text === text)) continue
+
+    const out = createPrompt(floor.id, {
+      text,
+      priority: report.lost.length > 0 || report.asking.length > 0 ? 'high' : 'medium',
+      /* Stamped as the machine, never as the human. The board prints
+         "(added by …)", and the boss's brief grants the HUMAN authority a
+         scheduler must not inherit. */
+      createdBy: 'autopilot',
+    })
+    if (out.ok) {
+      noteAutopilotRun(floor.id, stamp)
+      console.log(
+        `[autopilot] ${floor.name}: ${report.any} stuck (${report.asking.length} asking, ` +
+          `${report.lost.length} dead, ${report.stalled.length} stalled) — card added`,
+      )
+    } else {
+      console.error(`[autopilot] ${floor.name}: could not add a card — ${out.reason}`)
+    }
+  }
+}
+
+/* Armed one full tick AFTER boot, never during it: see the note above about
+   markSessionsLostAtBoot. unref'd and cleared on shutdown, matching the ping
+   interval — an automation must not be the reason a process refuses to exit. */
+const autopilotTimer = setInterval(runAutopilotSweep, AUTOPILOT_TICK_MS)
+if (typeof autopilotTimer.unref === 'function') autopilotTimer.unref()
+
+/** Arm or disarm autopilot for one floor. Hours, not a boolean — the caller
+ *  says how long it is allowed to run for, and 0 turns it off now. */
+app.post('/api/floors/:id/autopilot', requireLoopback, (req, res) => {
+  const floor = getFloor(req.params.id)
+  if (!floor) {
+    res.status(404).json({ error: 'No such floor' })
+    return
+  }
+  const hours = Number(req.body?.hours)
+  const everyMinutes = Number(req.body?.everyMinutes)
+
+  if (!Number.isFinite(hours) || hours < 0) {
+    res.status(400).json({ error: 'Say how many hours to run for (0 turns it off)' })
+    return
+  }
+  if (hours > AUTOPILOT_LIMITS.maxHours) {
+    res.status(400).json({
+      error: `Autopilot can be armed for at most ${AUTOPILOT_LIMITS.maxHours} hours at a time. Re-arm it tomorrow — that is the point of the limit.`,
+    })
+    return
+  }
+
+  const patch = {
+    untilMs: hours > 0 ? Date.now() + hours * 3600_000 : null,
+  }
+  if (Number.isFinite(everyMinutes)) {
+    if (everyMinutes < AUTOPILOT_LIMITS.minMinutes) {
+      res.status(400).json({
+        error: `The shortest interval is ${AUTOPILOT_LIMITS.minMinutes} minutes. Anything faster reports the same stuck work before anyone could have acted on it.`,
+      })
+      return
+    }
+    patch.everyMinutes = everyMinutes
+  }
+
+  const updated = updateFloor(floor.id, { autopilot: patch })
+  res.json({ floor: updated, limits: AUTOPILOT_LIMITS })
+})
+
+/** What autopilot WOULD say right now, without writing anything. The honest way
+ *  to try this feature before trusting it to run unattended. */
+app.get('/api/floors/:id/autopilot/preview', requireLoopback, (req, res) => {
+  const floor = getFloor(req.params.id)
+  if (!floor) {
+    res.status(404).json({ error: 'No such floor' })
+    return
+  }
+  const now = Date.now()
+  let report
+  try {
+    report = stuckReport(floor, sessionStates(), now)
+  } catch (err) {
+    res.status(500).json({ error: (err && err.message) || 'could not read the board' })
+    return
+  }
+  res.json({
+    autopilot: floor.autopilot,
+    armed: Boolean(floor.autopilot?.untilMs && floor.autopilot.untilMs > now),
+    stuck: report.any,
+    asking: report.asking.length,
+    lost: report.lost.length,
+    stalled: report.stalled.length,
+    wouldSay: report.any > 0 ? reportText(floor, report) : null,
+    limits: AUTOPILOT_LIMITS,
+  })
+})
+
 server.listen(PORT, HOST, () => {
   console.log(`munder-difflin-v2 server on http://localhost:${PORT} (bound ${HOST})`)
   /* Every pty died with the last shutdown, so any prompt card still sitting
@@ -4659,6 +4882,8 @@ function shutdown() {
   if (shuttingDown) return
   shuttingDown = true
   clearInterval(terminalPingInterval)
+  /* the sweep too: an automation must never be the reason a stop hangs */
+  clearInterval(autopilotTimer)
   watchers.closeAll()
   killAllTerminals()
   for (const client of chatClients) {

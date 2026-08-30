@@ -1056,6 +1056,40 @@ export const api = {
     })
   },
 
+  /** What autopilot would say about this floor right now, WITHOUT writing
+   *  anything. Reading this before arming it is the point — a floor with
+   *  nothing stuck gains nothing from being watched. */
+  async autopilotPreview(floorId: string): Promise<{
+    armed: boolean
+    stuck: number
+    asking: number
+    lost: number
+    stalled: number
+    wouldSay: string | null
+    autopilot: {
+      untilMs: number | null
+      everyMinutes: number
+      lastRunAt: string | null
+      runsToday: number
+    }
+    limits: { maxHours: number; minMinutes: number; maxRunsPerDay: number }
+  }> {
+    return request(`/api/floors/${floorId}/autopilot/preview`)
+  },
+
+  /** Arm autopilot for a number of HOURS (0 stops it now). Hours rather
+   *  than a switch: the authorisation is meant to lapse on its own. */
+  async setAutopilot(
+    floorId: string,
+    body: { hours: number; everyMinutes?: number },
+  ): Promise<{ floor: Floor }> {
+    return request(`/api/floors/${floorId}/autopilot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
+
   /** A floor's own goals, with their sub-goals nested. Read from THIS app's
    *  store, never from the CRM — they are there with the CRM stopped. */
   async getFloorGoals(floorId: string): Promise<{

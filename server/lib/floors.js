@@ -43,6 +43,33 @@ const MODELS = new Set(['opus', 'sonnet', 'haiku'])
 /** how much floor preamble is worth carrying in front of every instruction */
 const GLOBAL_PROMPT_MAX = 8000
 
+/** Autopilot is authorised UNTIL A TIME, never by a boolean.
+ *
+ *  A switch left on is a switch nobody remembers turning on, and the thing it
+ *  is switching on costs money every time it fires. An expiry means the
+ *  default state of the system is off, and staying on is something a person
+ *  has to keep choosing. */
+const AUTOPILOT_MAX_HOURS = 24
+const AUTOPILOT_MIN_MINUTES = 5
+const AUTOPILOT_MAX_RUNS_PER_DAY = 48
+
+function hydrateAutopilot(a) {
+  if (!a || typeof a !== 'object') {
+    return { untilMs: null, everyMinutes: 30, lastRunAt: null, runsToday: 0, dayStamp: null }
+  }
+  const every = Number(a.everyMinutes)
+  return {
+    /* the authorisation itself: a moment, in ms since epoch, after which the
+       sweep stops looking at this floor until a human re-arms it */
+    untilMs: Number.isFinite(Number(a.untilMs)) && Number(a.untilMs) > 0 ? Number(a.untilMs) : null,
+    everyMinutes:
+      Number.isFinite(every) && every >= AUTOPILOT_MIN_MINUTES ? Math.min(every, 720) : 30,
+    lastRunAt: typeof a.lastRunAt === 'string' && a.lastRunAt ? a.lastRunAt : null,
+    runsToday: Number.isFinite(Number(a.runsToday)) ? Math.max(0, Number(a.runsToday)) : 0,
+    dayStamp: typeof a.dayStamp === 'string' && a.dayStamp ? a.dayStamp : null,
+  }
+}
+
 const SESSION_ID_RE = /^[0-9a-zA-Z-]{8,64}$/
 
 /** de-duped list of plain names, bounded — these come from a client */
@@ -159,6 +186,8 @@ function hydrateFloor(f) {
        Clamped HERE, not only at the route, so no write path can store more. */
     globalPrompt:
       typeof f.globalPrompt === 'string' ? f.globalPrompt.slice(0, GLOBAL_PROMPT_MAX) : '',
+    /* Rebuilt here or lost on the next read — hydrateFloor is a whitelist. */
+    autopilot: hydrateAutopilot(f.autopilot),
     /* THE WORKSPACE. The project this floor's chats run in — which is two
        facts at once: the directory the work is IN (the project's fileDir,
        the pty's cwd) and the .claude folder the CLI reads its settings and
@@ -257,6 +286,8 @@ export function createFloor(name, kind = 'agents') {
     // Same reason as crmScope above: createFloor writes a bare literal, so a
     // field only added to hydrateFloor would be absent until the first save.
     globalPrompt: '',
+    // Off, and expiring — a new floor is never quietly running on its own.
+    autopilot: hydrateAutopilot(null),
     // Same bare-literal trap as crmScope and globalPrompt above.
     workspaceProjectId: null,
     // Built through hydrateAgent, NOT as a bare literal. A literal has to be
@@ -339,6 +370,14 @@ export function updateFloor(id, patch) {
             ? patch.workspaceProjectId
             : null)
         : cur.workspaceProjectId,
+    /* Merged, not replaced: the UI sends only what a person changed, while
+       lastRunAt / runsToday belong to the SWEEP. A wholesale write from a
+       stale browser tab would otherwise erase the ledger the daily cap is
+       counted from — which is how a cap becomes unenforceable. */
+    autopilot:
+      patch?.autopilot !== undefined
+        ? hydrateAutopilot({ ...cur.autopilot, ...patch.autopilot })
+        : cur.autopilot,
     globalPrompt:
       patch?.globalPrompt !== undefined
         ? String(patch.globalPrompt).slice(0, GLOBAL_PROMPT_MAX)
@@ -395,6 +434,36 @@ export function findFloorBySession(sessionId) {
  * change was saved" and "this floor was already attached to something else" is
  * the whole point of the rule.
  */
+/** The sweep stamping its own ledger. Separate from updateFloor because the
+ *  route merges a human patch, and these two fields are the machine talking to
+ *  itself — a human patch must never be able to reset the daily counter. */
+export function noteAutopilotRun(floorId, dayStamp) {
+  const floor = floors.find((f) => f.id === floorId)
+  if (!floor) return null
+  const a = hydrateAutopilot(floor.autopilot)
+  const sameDay = a.dayStamp === dayStamp
+  floor.autopilot = {
+    ...a,
+    lastRunAt: new Date().toISOString(),
+    /* a new day resets the count rather than accumulating forever */
+    runsToday: sameDay ? a.runsToday + 1 : 1,
+    dayStamp,
+  }
+  floor.updatedAt = new Date().toISOString()
+  try {
+    saveStore()
+  } catch (err) {
+    console.error(`[floors] could not persist an autopilot run: ${err?.message}`)
+  }
+  return clone(floor)
+}
+
+export const AUTOPILOT_LIMITS = {
+  maxHours: AUTOPILOT_MAX_HOURS,
+  minMinutes: AUTOPILOT_MIN_MINUTES,
+  maxRunsPerDay: AUTOPILOT_MAX_RUNS_PER_DAY,
+}
+
 export function setFloorScope(floorId, crmScope) {
   const floor = floors.find((f) => f.id === floorId)
   if (!floor) return { ok: false, reason: 'No such floor' }

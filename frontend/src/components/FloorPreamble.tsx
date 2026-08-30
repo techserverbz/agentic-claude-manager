@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { FolderTree } from 'lucide-react'
 import type { Floor, Project } from '../lib/api'
 import { FloorWorkspace } from './FloorWorkspace'
+import { FloorAutopilot } from './FloorAutopilot'
 
 /**
  * FloorPreamble — the one thing every agent on a floor is told first.
@@ -107,6 +108,10 @@ export function FloorPreamble({
           the agents do not actually run in is the failure this pair exists
           to prevent. */}
       <FloorWorkspace floor={floor} projects={projects} onChanged={onWorkspaceChanged} />
+
+      {/* Below the workspace, above the words: autopilot is a property of
+          how this floor RUNS, and it reads best next to where it runs. */}
+      <FloorAutopilot floor={floor} />
 
       <div className="flex shrink-0 items-baseline gap-3 border-b border-hairline px-5 py-3">
         <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-sand-dim">
