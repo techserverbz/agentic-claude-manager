@@ -153,7 +153,10 @@ export function AgentPicker({
         title="Show a different agent in this window"
         onClick={() => setOpen((o) => !o)}
         className={
-          'group flex min-w-0 max-w-[13rem] cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors duration-200 ' +
+          /* A floor under the name as well as a ceiling. Squeezed to its
+             monogram the picker stops being a label at all, and one window
+             becomes indistinguishable from the next. */
+          'group flex min-w-[7rem] max-w-[13rem] flex-1 cursor-pointer items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors duration-200 ' +
           (open
             ? 'border-brass bg-brass/10'
             : 'border-transparent hover:border-hairline hover:bg-white/[0.03]')

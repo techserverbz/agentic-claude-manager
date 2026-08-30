@@ -269,7 +269,14 @@ export function SessionPane({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* — single merged header: grip · chat name / project · CHAT|TERMINAL — */}
-      <div className="flex items-center gap-1.5 border-b border-hairline bg-midnight-2 px-2 py-1.5">
+      {/* @container: each pane header measures ITSELF. Four windows in a row
+          make each header a third of the width it has in a single pane, and
+          the viewport cannot tell you that. */}
+      {/* flex-wrap, so a pane too narrow for one row gets TWO rather than
+          squeezing the agent name down to its monogram. Nothing is hidden
+          and nothing overlaps; the header is a line taller on the narrowest
+          panes, which is the one cost worth paying here. */}
+      <div className="@container flex flex-wrap items-center gap-1.5 border-b border-hairline bg-midnight-2 px-2 py-1.5">
         {dragHandleProps !== undefined && (
           <button
             type="button"
@@ -326,14 +333,16 @@ export function SessionPane({
                 aria-current={isActive ? 'true' : undefined}
                 title={label}
                 aria-label={label}
-                className={`relative flex cursor-pointer items-center gap-1.5 border px-2.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] transition-colors duration-200 ${
+                className={`relative flex shrink-0 cursor-pointer items-center gap-1.5 border px-1.5 py-1.5 font-mono text-[9px] uppercase tracking-[0.14em] transition-colors duration-200 @[26rem]:px-2.5 ${
                   isActive
                     ? 'border-brass bg-brass/10 text-brass'
                     : 'border-hairline text-sand hover:border-brass hover:text-brass'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                <span>{label}</span>
+                {/* the word goes first when the pane is tight — the icon
+                    already says CHAT or TERMINAL, the word is reassurance */}
+                <span className="hidden @[26rem]:inline">{label}</span>
               </button>
             )
           })}

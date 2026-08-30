@@ -269,7 +269,7 @@ export function AgentTerminalGrid({
           ? /* One row of full-height vertical columns, shrinking to share the
                  width so every selected window stays visible (no side-scroll).
                  The hairline gap is the only thing between two terminals. */
-            'relative flex h-full min-h-0 w-full gap-px overflow-hidden bg-hairline'
+            'no-scrollbar relative flex h-full min-h-0 w-full gap-px overflow-x-auto overflow-y-hidden bg-hairline'
           : 'relative h-full min-h-0 w-full'
       }
     >
@@ -303,7 +303,11 @@ export function AgentTerminalGrid({
                     shown ? 'z-10' : 'invisible pointer-events-none z-0'
                   }`
                 : shown
-                  ? 'relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col bg-surface'
+                  ? /* min-w-0 alone let a fourth window squeeze the others until
+                       the header controls overlapped the agent name. A floor of
+                       14rem keeps every pane readable and lets the row scroll
+                       rather than crushing what is already there. */
+                    'relative flex min-h-0 min-w-[14rem] flex-1 basis-0 flex-col bg-surface'
                   : /* in nobody's window: still mounted and still running,
                        parked out of the row rather than deleted from it */
                     'invisible pointer-events-none absolute inset-0 flex flex-col bg-surface'
@@ -339,8 +343,14 @@ export function AgentTerminalGrid({
                      agent's name a third time on the same window. */
                   hideTitle
                   headerLead={
-                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate font-mono text-[8.5px] uppercase tracking-[0.22em] text-sand-dim">
+                    /* basis-full below 26rem: the name takes the whole first
+                       row and the controls drop to a second one. Above that
+                       the original single-row layout returns untouched. */
+                    <div className="flex min-w-0 flex-1 basis-full flex-col gap-0.5 @[26rem]:basis-auto">
+                      {/* Hidden when the pane is tight: the picker itself names
+                          the floor whenever there is more than one, so this line
+                          is the cheapest thing to give back to the name. */}
+                      <span className="hidden truncate font-mono text-[8.5px] uppercase tracking-[0.22em] text-sand-dim @[20rem]:block">
                         {floor.name}
                       </span>
                       <AgentPicker
@@ -354,6 +364,11 @@ export function AgentTerminalGrid({
                       />
                     </div>
                   }
+                  /* ALL FOUR STAY, at every width. An earlier version dropped
+                     them as the pane narrowed and that was the wrong trade: a
+                     control you cannot find is worse than one that is merely
+                     tight. The space comes from the CHAT/TERMINAL words and the
+                     agent name, neither of which loses meaning by shrinking. */
                   headerActions={
                     <>
                       <button
