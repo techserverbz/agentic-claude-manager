@@ -890,6 +890,18 @@ app.post('/api/floors/:id/goals/sync', requireLoopback, async (req, res) => {
     })
     return
   }
+  /* A floor can attach to four things, and one of them is not a thing:
+     'mine' is a V2 filter, not a CRM target — crmCreateGoal turns it into an
+     org-wide goal owned by you. Syncing a floor attached to "my tasks" would
+     write goals somewhere nobody pointed at, so it is refused as plainly as
+     being unattached is. */
+  if (floor.crmScope.targetType === 'mine') {
+    res.status(409).json({
+      error:
+        'This floor is attached to "my tasks", which is a filter rather than something in the CRM. Sync needs a service or a project to write to.',
+    })
+    return
+  }
   if (!crmConfigured()) {
     res.status(409).json({ error: 'The CRM connection is not configured on this machine.' })
     return
