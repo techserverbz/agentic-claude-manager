@@ -41,7 +41,15 @@ export type ChatServerEvent =
   /* the authoritative set of sessions with a live pty right now — pushed on
      every pty birth/death and on connect. Drives the "live" green dot so it
      reflects real running shells, not just which windows are open. */
-  | { type: 'live-sessions'; ids: string[] }
+  | {
+      type: 'live-sessions'
+      ids: string[]
+      /* what each live session is DOING: 'running' produced output just
+         now, 'waiting' has been silent long enough to be waiting on you.
+         Absent from an older server, which is why the dot falls back to
+         the ids alone. */
+      states?: Record<string, 'running' | 'waiting'>
+    }
 
 export type ChatSocketListener = (event: ChatServerEvent) => void
 

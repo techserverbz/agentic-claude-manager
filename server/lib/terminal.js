@@ -167,6 +167,37 @@ export function isSessionLiveIn(projectId, sessionId) {
   return false
 }
 
+/** How long a live pty must say nothing before we call it WAITING rather
+ *  than working. Generous on purpose: a model mid-answer streams in bursts
+ *  with real gaps between them, and a dot that flickers amber every time it
+ *  pauses for breath is worse than no dot at all. */
+const IDLE_AFTER_MS = 4000
+
+/**
+ * What each live session is DOING, not merely that it exists.
+ *
+ *   'running'  it produced output just now — it is working
+ *   'waiting'  alive, but silent for a while: it is waiting on you
+ *
+ * A session with no pty appears in neither, which is what "nothing running"
+ * means. The distinction is drawn from output timing because that is the
+ * only thing true of BOTH an agent and a plain chat — the prompt board can
+ * say an agent is blocked, but a group chat has no board to ask.
+ */
+export function sessionStates() {
+  const now = Date.now()
+  const out = {}
+  for (const entry of ptySessions.values()) {
+    if (entry.exited || !entry.sessionId) continue
+    const last = entry.lastOutputAt ?? 0
+    const state = now - last < IDLE_AFTER_MS ? 'running' : 'waiting'
+    /* One id can have a pty per project. Working anywhere beats waiting
+       everywhere — the dot answers "is this chat busy", and it is. */
+    if (out[entry.sessionId] !== 'running') out[entry.sessionId] = state
+  }
+  return out
+}
+
 export function liveSessionIds() {
   const ids = new Set()
   for (const entry of ptySessions.values()) {
@@ -907,6 +938,9 @@ export function handleTerminalConnection(ws, { project, sessionId, forceRestart 
 
   term.onData((data) => {
     // Buffer (bounded ~256KB, drop oldest) so a reconnect can replay the screen.
+    /* stamped on every chunk: sessionStates() reads this to tell working
+       from waiting, and it is the only place output is guaranteed to pass */
+    entry.lastOutputAt = Date.now()
     entry.buffer.push(data)
     entry.bufferBytes += data.length
     while (entry.bufferBytes > MAX_BUFFER_BYTES && entry.buffer.length > 1) {
@@ -1119,6 +1153,9 @@ export function ensureSession({ project, sessionId = null, briefPath = null, mod
   // replays everything the session has said so far — without this a dispatched
   // step would appear blank the first time a human looks at it.
   term.onData((data) => {
+    /* stamped on every chunk: sessionStates() reads this to tell working
+       from waiting, and it is the only place output is guaranteed to pass */
+    entry.lastOutputAt = Date.now()
     entry.buffer.push(data)
     entry.bufferBytes += data.length
     while (entry.bufferBytes > MAX_BUFFER_BYTES && entry.buffer.length > 1) {

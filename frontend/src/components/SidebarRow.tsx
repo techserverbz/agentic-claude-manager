@@ -17,6 +17,10 @@ export interface SidebarRowProps {
   selected?: boolean
   /** a live shell is running for this row — shows a green blinking marker */
   active?: boolean
+  /** 'running' = working (green), 'waiting' = alive but silent, waiting on
+   *  you (amber). Undefined with active=true keeps the old green dot, so a
+   *  caller that has not been taught about states loses nothing. */
+  state?: 'running' | 'waiting'
   /** a session row nested under its project — tighter, no '№NN' index */
   nested?: boolean
   /** when defined the trailing chevron is a disclosure caret (down when open) */
@@ -44,6 +48,7 @@ export function SidebarRow({
   subtitle,
   selected,
   active,
+  state,
   nested,
   expanded,
   color,
@@ -61,6 +66,10 @@ export function SidebarRow({
   const num = String(index + 1).padStart(2, '0')
   const isSelected = selected === true
   const isActive = active === true
+  /* Three states, and the third one is the absence of a dot: nothing running
+     is not a colour, it is nothing to report. Amber is the one worth
+     noticing — it means a chat has stopped and is waiting for a person. */
+  const isWaiting = isActive && state === 'waiting'
   const isNested = nested === true
   const isDisclosure = expanded !== undefined
 
@@ -105,7 +114,12 @@ export function SidebarRow({
           className="flex w-[7px] shrink-0 items-center justify-center"
         >
           {isActive ? (
-            <span className="mo-live-dot" role="img" aria-label="Live shell running" />
+            <span
+              className={isWaiting ? 'mo-wait-dot' : 'mo-live-dot'}
+              role="img"
+              aria-label={isWaiting ? 'Waiting for your input' : 'Running'}
+              title={isWaiting ? 'Waiting for your input' : 'Running'}
+            />
           ) : null}
         </span>
         {typeof color === 'string' && color !== '' && (

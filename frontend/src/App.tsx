@@ -87,6 +87,9 @@ function initialDefaultView(): DefaultView {
 }
 
 /** single pane vs multi pane — persisted under 'cos-pane-mode' */
+/** what a live chat is doing right now: working, or waiting on you */
+export type SessionState = 'running' | 'waiting'
+
 export type PaneMode = 'single' | 'multi'
 function initialPaneMode(): PaneMode {
   return localStorage.getItem('cos-pane-mode') === 'multi' ? 'multi' : 'single'
@@ -631,6 +634,9 @@ export default function App() {
      switching/closing the pane that showed it, and clears only when its pty
      actually exits or is reaped. */
   const [serverLiveSessions, setServerLiveSessions] = useState<string[]>([])
+  /* running vs waiting, per session. Only the server can tell these apart —
+     it is the one holding the pty and watching the output stop. */
+  const [sessionStates, setSessionStates] = useState<Record<string, SessionState>>({})
   /* green-dot source: the union of the server's live ptys and this client's
      currently-connected panes (the latter covers the instant before the first
      server push lands). serverLiveSessions is authoritative and a superset in
@@ -1109,6 +1115,9 @@ export default function App() {
         /* authoritative live-pty set from the server — drives the green dots so
            they persist across pane switches and clear only on real exit/reap */
         setServerLiveSessions(ev.ids)
+        /* An older server sends no states; the dot then falls back to green
+           for anything live, which is exactly the behaviour we had before. */
+        if (ev.states) setSessionStates(ev.states)
       } else if (ev.type === 'sessions-updated') {
         void refreshProjects()
       } else if (ev.type === 'session-created') {
@@ -1712,6 +1721,7 @@ export default function App() {
           selectedProjectId={selectedProjectId}
           selectedSessionId={activeSessionId}
           activeSessions={activeSessions}
+          sessionStates={sessionStates}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
           onSelectProject={handleSelectProject}

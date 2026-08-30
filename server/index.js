@@ -135,6 +135,7 @@ import {
   killSession,
   listLiveSessions,
   liveSessionIds,
+  sessionStates,
   isSessionLiveIn,
   setLiveChangeListener,
   readSessionOutput,
@@ -4435,12 +4436,28 @@ watchers.sync(listProjects())
 // client's "live" green dot reflects the ACTUAL running shells — not just which
 // sessions a given window happens to be showing. Switching/closing a pane keeps
 // the pty alive (4h keep-alive) and does NOT change this set, so the dot stays.
-setLiveChangeListener(() => broadcast({ type: 'live-sessions', ids: liveSessionIds() }))
+const pushLive = () => broadcast({ type: 'live-sessions', ids: liveSessionIds(), states: sessionStates() })
+setLiveChangeListener(pushLive)
+
+/* A pty going quiet is not an event — nothing fires when output STOPS — so the
+   running -> waiting flip has to be noticed by looking. Broadcast only when the
+   picture actually changed, or every client redraws its sidebar every second
+   for no reason. */
+let lastStates = ''
+setInterval(() => {
+  const states = sessionStates()
+  const encoded = JSON.stringify(states)
+  if (encoded === lastStates) return
+  lastStates = encoded
+  broadcast({ type: 'live-sessions', ids: liveSessionIds(), states })
+}, 1500).unref()
 
 chatWss.on('connection', (ws) => {
   chatClients.add(ws)
   // Seed the newcomer with the current live set so its dots are correct at once.
-  sendTo(ws, { type: 'live-sessions', ids: liveSessionIds() })
+  /* the first push a client gets — it must carry states too, or every dot
+     starts green and only corrects itself on the next change */
+  sendTo(ws, { type: 'live-sessions', ids: liveSessionIds(), states: sessionStates() })
 
   // Parse-and-ignore: no client frame drives the server anymore. Kept as a
   // no-op so a stray/legacy frame can never crash the socket.

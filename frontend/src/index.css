@@ -336,6 +336,29 @@ textarea:focus-visible {
 
 /* live shell marker — the ONE sanctioned non-token color: a semantic green
    status dot (matching claudecodeui's live indicator), solid (no blink) */
+/* Waiting on a person: amber, and it BREATHES. A chat that has stopped and
+   needs you is the one thing on this sidebar worth catching your eye, and a
+   static dot in a list of static dots does not. */
+.mo-wait-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: #e0913a;
+  box-shadow: 0 0 6px rgba(224, 145, 58, 0.8);
+  flex-shrink: 0;
+  animation: mo-wait-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes mo-wait-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Respect the setting — a pulsing dot is exactly what this is for. */
+@media (prefers-reduced-motion: reduce) {
+  .mo-wait-dot { animation: none; }
+}
+
 .mo-live-dot {
   width: 7px;
   height: 7px;

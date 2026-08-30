@@ -130,6 +130,7 @@ export function Sidebar({
   selectedProjectId,
   selectedSessionId,
   activeSessions,
+  sessionStates,
   collapsed,
   onToggleCollapse,
   onSelectProject,
@@ -189,6 +190,9 @@ export function Sidebar({
   selectedSessionId: string | null
   /** session ids with a live shell — render a green blinking marker */
   activeSessions: string[]
+  /** per-session: 'running' (working) or 'waiting' (silent, wants you).
+   *  A session absent from this map is simply live with nothing to add. */
+  sessionStates: Record<string, 'running' | 'waiting'>
   /** folded away to a thin rail to give the floor more room */
   collapsed: boolean
   onToggleCollapse: () => void
@@ -301,6 +305,11 @@ export function Sidebar({
   onDeleteWorkflowProject: (id: string) => void
 }) {
   const activeSet = new Set(activeSessions)
+  /* A GROUP or a FLOOR is amber when any chat inside it is waiting: the row
+     is a summary, and the thing you need to know about a collapsed group is
+     that something in there has stopped for you. */
+  const waitingIn = (ids: (string | null | undefined)[]) =>
+    ids.some((id) => id != null && sessionStates[id] === 'waiting') ? 'waiting' : 'running'
   // hidden "loose" projects never appear in the sidebar Projects list
   const visibleProjects = projects.filter((p) => !p.ephemeral)
   /* every LISTING of groups in this file reads this, never `groups` — see
@@ -1311,6 +1320,9 @@ export function Sidebar({
                           active={f.agents.some(
                             (a) => a.sessionId != null && activeSet.has(a.sessionId),
                           )}
+                          state={waitingIn(
+                            f.agents.filter((a) => a.sessionId != null && activeSet.has(a.sessionId)).map((a) => a.sessionId),
+                          )}
                           onSelect={() =>
                             setExpandedFloors((prev) => {
                               const next = new Set(prev)
@@ -1345,6 +1357,7 @@ export function Sidebar({
                                       }
                                       selected={selAgentId === a.id && selFloorId === f.id}
                                       active={a.sessionId != null && activeSet.has(a.sessionId)}
+                                      state={a.sessionId ? sessionStates[a.sessionId] : undefined}
                                       /* Clicking a name lands you IN the
                                          conversation — that is what a person
                                          means by clicking an agent. It reuses a
@@ -1645,6 +1658,9 @@ export function Sidebar({
                         }`}
                         expanded={open}
                         active={g.chats.some((c) => activeSet.has(c.sessionId))}
+                        state={waitingIn(
+                          g.chats.filter((c) => activeSet.has(c.sessionId)).map((c) => c.sessionId),
+                        )}
                         draggable
                         onDragStart={(e) => {
                           e.dataTransfer.effectAllowed = 'move'
@@ -1750,6 +1766,7 @@ export function Sidebar({
                                       subtitle={cSub}
                                       selected={c.sessionId === selectedSessionId}
                                       active={activeSet.has(c.sessionId)}
+                                      state={sessionStates[c.sessionId]}
                                       draggable
                                       onDragStart={(e) => {
                                         e.dataTransfer.effectAllowed = 'move'
@@ -1866,6 +1883,7 @@ export function Sidebar({
                         )} · ${shortPath(s.cwd) || s.folder}`}
                         selected={s.sessionId === selectedSessionId}
                         active={activeSet.has(s.sessionId)}
+                        state={sessionStates[s.sessionId]}
                         onSelect={() => onOpenComputerSession(s)}
                         onContextMenu={(e) =>
                           openMenu(e, {
@@ -1982,6 +2000,7 @@ export function Sidebar({
                                     } · ${relativeTime(s.lastActive)}`}
                                     selected={s.sessionId === selectedSessionId}
                                     active={activeSet.has(s.sessionId)}
+                                    state={sessionStates[s.sessionId]}
                                     onSelect={() => onOpenComputerSession(s)}
                                     onContextMenu={(e) =>
                                       openMenu(e, {
