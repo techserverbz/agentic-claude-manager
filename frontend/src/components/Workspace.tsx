@@ -85,6 +85,7 @@ export function Workspace({
   selAgentId,
   onSelectAgent,
   agentCommand,
+  sessionStates,
   openChatSignal,
   agentSlots,
   onAgentSlotsChange,
@@ -161,6 +162,10 @@ export function Workspace({
   onSelectAgent: (floorId: string, agentId: string, openChat?: boolean) => void
   /** a verb aimed at the selected agent's pane; the nonce makes a repeat fire */
   agentCommand: { kind: 'terminal' | 'chat' | 'reconnect'; nonce: number } | null
+  /** what each live session is doing, so a TAB says the same thing the
+   *  sidebar row does — a group chat is a tab, and it was still painting
+   *  plain green for "has a shell". */
+  sessionStates: Record<string, 'running' | 'question' | 'idle'>
   /** bumped when a selection asked to land in the chat, not just select */
   openChatSignal: number
   /** which agent is in which window on the agent grid — owned by App so a
@@ -327,6 +332,22 @@ export function Workspace({
           {realTabs.map((t) => {
             const isActive = t.key === activeTabKey
             const isLive = t.sessionId !== null && liveSet.has(t.sessionId)
+            /* Same three meanings as the sidebar: green only while it is
+               generating, amber only when something is waiting on a person,
+               grey when it is simply alive. */
+            const tabState = t.sessionId !== null ? sessionStates[t.sessionId] : undefined
+            const tabDot =
+              tabState === 'question'
+                ? 'mo-ask-dot'
+                : tabState === 'idle'
+                  ? 'mo-idle-dot'
+                  : 'mo-live-dot'
+            const tabDotLabel =
+              tabState === 'question'
+                ? 'Waiting for your answer'
+                : tabState === 'idle'
+                  ? 'Idle'
+                  : 'Running'
             const isTabDragging = draggingKey === t.key
             const isTabDragOver =
               canReorderTabs && dragOverKey === t.key && draggingKey !== null && draggingKey !== t.key
@@ -354,14 +375,15 @@ export function Workspace({
                   onClick={() => onSelectTab(t.key)}
                   className="flex min-w-0 cursor-pointer items-center gap-2 py-3.5 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors duration-200 hover:text-brass"
                 >
-                  {/* status dot: filled brass when active, green live dot when
-                      the shell is running, else a faint hollow ring */}
+                  {/* status dot: green generating, amber waiting on you, grey
+                      alive-and-quiet; filled brass when this is the active tab
+                      and it has no shell, else a faint hollow ring */}
                   <span
                     aria-hidden={isLive ? undefined : true}
                     className="flex h-[7px] w-[7px] shrink-0 items-center justify-center"
                   >
                     {isLive ? (
-                      <span className="mo-live-dot" role="img" aria-label="Live shell running" />
+                      <span className={tabDot} role="img" aria-label={tabDotLabel} title={tabDotLabel} />
                     ) : isActive ? (
                       <span className="h-[7px] w-[7px] rounded-full bg-brass" />
                     ) : (

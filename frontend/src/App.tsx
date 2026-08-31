@@ -1821,6 +1821,7 @@ export default function App() {
           selAgentId={agentSel?.agentId ?? null}
           onSelectAgent={handleSelectAgent}
           agentCommand={agentCommand}
+          sessionStates={sessionStates}
           openChatSignal={openChatNonce}
           agentSlots={agentSlots}
           onAgentSlotsChange={setAgentSlots}
