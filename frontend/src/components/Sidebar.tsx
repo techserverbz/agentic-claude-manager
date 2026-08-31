@@ -192,7 +192,7 @@ export function Sidebar({
   activeSessions: string[]
   /** per-session: 'running' (working) or 'waiting' (silent, wants you).
    *  A session absent from this map is simply live with nothing to add. */
-  sessionStates: Record<string, 'running' | 'waiting'>
+  sessionStates: Record<string, 'running' | 'question' | 'idle'>
   /** folded away to a thin rail to give the floor more room */
   collapsed: boolean
   onToggleCollapse: () => void
@@ -305,11 +305,16 @@ export function Sidebar({
   onDeleteWorkflowProject: (id: string) => void
 }) {
   const activeSet = new Set(activeSessions)
-  /* A GROUP or a FLOOR is amber when any chat inside it is waiting: the row
-     is a summary, and the thing you need to know about a collapsed group is
-     that something in there has stopped for you. */
-  const waitingIn = (ids: (string | null | undefined)[]) =>
-    ids.some((id) => id != null && sessionStates[id] === 'waiting') ? 'waiting' : 'running'
+  /* A GROUP or FLOOR row summarises its children, most urgent first: a
+     question in there is the thing you need to know about a collapsed group,
+     ahead of the fact that something else is busy. */
+  const waitingIn = (
+    ids: (string | null | undefined)[],
+  ): 'running' | 'question' | 'idle' => {
+    if (ids.some((id) => id != null && sessionStates[id] === 'question')) return 'question'
+    if (ids.some((id) => id != null && sessionStates[id] === 'running')) return 'running'
+    return 'idle'
+  }
   // hidden "loose" projects never appear in the sidebar Projects list
   const visibleProjects = projects.filter((p) => !p.ephemeral)
   /* every LISTING of groups in this file reads this, never `groups` — see

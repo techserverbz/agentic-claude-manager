@@ -88,7 +88,7 @@ function initialDefaultView(): DefaultView {
 
 /** single pane vs multi pane — persisted under 'cos-pane-mode' */
 /** what a live chat is doing right now: working, or waiting on you */
-export type SessionState = 'running' | 'waiting'
+export type SessionState = 'running' | 'question' | 'idle'
 
 export type PaneMode = 'single' | 'multi'
 function initialPaneMode(): PaneMode {

@@ -336,27 +336,28 @@ textarea:focus-visible {
 
 /* live shell marker — the ONE sanctioned non-token color: a semantic green
    status dot (matching claudecodeui's live indicator), solid (no blink) */
-/* Waiting on a person: amber, and it BREATHES. A chat that has stopped and
-   needs you is the one thing on this sidebar worth catching your eye, and a
-   static dot in a list of static dots does not. */
-.mo-wait-dot {
+/* A question is waiting on a person: amber, and STILL. It pulsed once, and a
+   blinking dot in the corner of your eye reads as an alarm — this is a
+   waiting room, not a fire. Colour alone is enough when the other two are
+   green and grey. */
+.mo-ask-dot {
   width: 7px;
   height: 7px;
   border-radius: 9999px;
   background: #e0913a;
-  box-shadow: 0 0 6px rgba(224, 145, 58, 0.8);
+  box-shadow: 0 0 6px rgba(224, 145, 58, 0.75);
   flex-shrink: 0;
-  animation: mo-wait-pulse 1.8s ease-in-out infinite;
 }
 
-@keyframes mo-wait-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-/* Respect the setting — a pulsing dot is exactly what this is for. */
-@media (prefers-reduced-motion: reduce) {
-  .mo-wait-dot { animation: none; }
+/* Alive, doing nothing. Present rather than absent, because "this chat is
+   open and quiet" and "there is no chat here" are different facts and the
+   sidebar should not tell you the same thing about both. */
+.mo-idle-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: #5b5f66;
+  flex-shrink: 0;
 }
 
 .mo-live-dot {

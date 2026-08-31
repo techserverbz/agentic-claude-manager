@@ -184,16 +184,66 @@ const IDLE_AFTER_MS = 4000
  * only thing true of BOTH an agent and a plain chat — the prompt board can
  * say an agent is blocked, but a group chat has no board to ask.
  */
+/**
+ * Update what a session is doing from a chunk of its own output.
+ *
+ * Driven by ARRIVAL rather than by scanning a tail, because entry.buffer is
+ * cumulative scrollback with no screen model: "esc to interrupt" stays in it
+ * long after the turn it belonged to ended, so any tail scan reports a
+ * finished session as still working. The stream has the one thing the buffer
+ * has lost — order.
+ *
+ * A question outranks running on purpose: a permission dialog appears DURING
+ * a turn, and while it is up the agent is not working, it is waiting for you.
+ */
+/** Does this text say anything about the turn at all? */
+function decide(t) {
+  return (
+    TURN_QUESTION_RE.test(t) ||
+    TURN_RUNNING_RE.test(t) ||
+    TURN_DONE_RE.test(t) ||
+    TURN_IDLE_RE.test(t)
+  )
+}
+
+function noteTurnState(entry, chunk) {
+  const clean = String(chunk).replace(OSC_RE, '').replace(ANSI_RE, '').replace(/\s+/g, '')
+  if (!clean) return
+  const carry = entry.turnCarry ?? ''
+  entry.turnCarry = clean.slice(-96)
+
+  /* THIS chunk decides, if it says anything at all. The carry exists only to
+     catch a marker the pty split down the middle — "auto mode" + "on" — and it
+     is consulted ONLY when the chunk alone matched nothing. Joining first was
+     worse than not carrying at all: a stale "esc to interrupt" sitting in the
+     carry outranked the fresh "· done" beside it, so a finished turn kept
+     reporting itself as running. */
+  const t = decide(clean) ? clean : carry + clean
+  /* One decision per chunk, most urgent first. A frame can carry the
+     spinner AND the footer while generating, so running has to be tested
+     before idle or the dot would flicker grey mid-turn. */
+  if (TURN_QUESTION_RE.test(t)) entry.turnState = 'question'
+  else if (TURN_RUNNING_RE.test(t)) entry.turnState = 'running'
+  else if (TURN_DONE_RE.test(t) || TURN_IDLE_RE.test(t)) entry.turnState = 'idle'
+}
+
 export function sessionStates() {
   const now = Date.now()
   const out = {}
   for (const entry of ptySessions.values()) {
     if (entry.exited || !entry.sessionId) continue
-    const last = entry.lastOutputAt ?? 0
-    const state = now - last < IDLE_AFTER_MS ? 'running' : 'waiting'
-    /* One id can have a pty per project. Working anywhere beats waiting
-       everywhere — the dot answers "is this chat busy", and it is. */
-    if (out[entry.sessionId] !== 'running') out[entry.sessionId] = state
+    /* What it SAID it is doing, not how recently it made a noise. A session
+       that has never announced either reads as idle: it is alive with nothing
+       to report, which is the honest answer and the quiet colour. */
+    const state = entry.turnState === 'running' || entry.turnState === 'question'
+      ? entry.turnState
+      : 'idle'
+    /* One id can have a pty per project. Working anywhere beats asking, and
+       asking beats idle — the dot answers "does this chat need me, or is it
+       busy", and the more urgent answer wins. */
+    const rank = { idle: 0, question: 1, running: 2 }
+    const prev = out[entry.sessionId]
+    if (prev === undefined || rank[state] > rank[prev]) out[entry.sessionId] = state
   }
   return out
 }
@@ -279,6 +329,34 @@ const TRUST_GATE_SQUASHED_RE = /trustthisfolder|doyoutrust|trustthefilesinthisfo
 // NEITHER of the older "│ > " / "? for shortcuts" markers is ever painted — so
 // matching only those two made the father greeting look like it was never wired
 // up at all. Keep the old markers for older installs; add, never replace.
+/* WHAT THE TUI ACTUALLY SAYS ABOUT ITSELF.
+ *
+ * Sampled from a real session rather than guessed, because the previous
+ * signal — "no output for 4 seconds" — cannot tell these apart at all:
+ * typing echoes bytes, so a person typing looked exactly like an agent
+ * working, and a finished turn looked exactly like a pending question.
+ *
+ *   generating : "Philosophising… ❯ · esc to interrupt"
+ *   typed only : the footer, and no interrupt hint
+ *   finished   : "Cooked for 3s · done 3:33 PM ❯"
+ *   asking     : "Enter to confirm · Esc to cancel"
+ *
+ * Note ❯ appears in EVERY one of those, which is why PROMPT_READY_RE below
+ * is no use as an idle test — it was written as a boot gate and it is only
+ * honest about that.
+ *
+ * Matched against whitespace-STRIPPED text: the TUI pads and re-wraps these
+ * strings as the pane resizes, so spacing is not something to depend on. */
+const TURN_RUNNING_RE = /esctointerrupt/i
+/* the turn footer claude prints when it stops: '<verb> for 3s · done 3:33 PM' */
+const TURN_DONE_RE = /·done\d|·done$/i
+/* a modal waiting on a person: menus, permission prompts, the trust gate */
+const TURN_QUESTION_RE = /entertoconfirm|doyouwant|doyoutrust|trustthisfolder|selectloginmethod/i
+/* The composer footer. This is the ONLY thing that says 'no modal is up' —
+   without it a question was sticky forever, because a dismissed dialog does
+   not announce itself, it simply stops being redrawn. */
+const TURN_IDLE_RE = /automodeon|\?forshortcuts/i
+
 const PROMPT_READY_RE = /❯|│>|\?forshortcuts|automodeon/i
 
 /** Strip ANSI escapes + normalize the pty stream to readable lines. */
@@ -938,9 +1016,10 @@ export function handleTerminalConnection(ws, { project, sessionId, forceRestart 
 
   term.onData((data) => {
     // Buffer (bounded ~256KB, drop oldest) so a reconnect can replay the screen.
-    /* stamped on every chunk: sessionStates() reads this to tell working
-       from waiting, and it is the only place output is guaranteed to pass */
+    /* the only place output is guaranteed to pass, so the turn state is read
+       from here — see noteTurnState */
     entry.lastOutputAt = Date.now()
+    noteTurnState(entry, data)
     entry.buffer.push(data)
     entry.bufferBytes += data.length
     while (entry.bufferBytes > MAX_BUFFER_BYTES && entry.buffer.length > 1) {
@@ -1153,9 +1232,10 @@ export function ensureSession({ project, sessionId = null, briefPath = null, mod
   // replays everything the session has said so far — without this a dispatched
   // step would appear blank the first time a human looks at it.
   term.onData((data) => {
-    /* stamped on every chunk: sessionStates() reads this to tell working
-       from waiting, and it is the only place output is guaranteed to pass */
+    /* the only place output is guaranteed to pass, so the turn state is read
+       from here — see noteTurnState */
     entry.lastOutputAt = Date.now()
+    noteTurnState(entry, data)
     entry.buffer.push(data)
     entry.bufferBytes += data.length
     while (entry.bufferBytes > MAX_BUFFER_BYTES && entry.buffer.length > 1) {

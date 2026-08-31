@@ -48,7 +48,7 @@ export type ChatServerEvent =
          now, 'waiting' has been silent long enough to be waiting on you.
          Absent from an older server, which is why the dot falls back to
          the ids alone. */
-      states?: Record<string, 'running' | 'waiting'>
+      states?: Record<string, 'running' | 'question' | 'idle'>
     }
 
 export type ChatSocketListener = (event: ChatServerEvent) => void

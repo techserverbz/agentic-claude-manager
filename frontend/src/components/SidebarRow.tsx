@@ -17,10 +17,15 @@ export interface SidebarRowProps {
   selected?: boolean
   /** a live shell is running for this row — shows a green blinking marker */
   active?: boolean
-  /** 'running' = working (green), 'waiting' = alive but silent, waiting on
-   *  you (amber). Undefined with active=true keeps the old green dot, so a
-   *  caller that has not been taught about states loses nothing. */
-  state?: 'running' | 'waiting'
+  /** What the chat is doing, as the chat itself reports it:
+ *
+ *    'running'   generating — green
+ *    'question'  a prompt is waiting on a person — amber
+ *    'idle'      alive, nothing happening — grey
+ *
+ *  Undefined with active=true falls back to green, so a caller that has not
+   *  been taught about states loses nothing. */
+  state?: 'running' | 'question' | 'idle'
   /** a session row nested under its project — tighter, no '№NN' index */
   nested?: boolean
   /** when defined the trailing chevron is a disclosure caret (down when open) */
@@ -66,10 +71,18 @@ export function SidebarRow({
   const num = String(index + 1).padStart(2, '0')
   const isSelected = selected === true
   const isActive = active === true
-  /* Three states, and the third one is the absence of a dot: nothing running
-     is not a colour, it is nothing to report. Amber is the one worth
-     noticing — it means a chat has stopped and is waiting for a person. */
-  const isWaiting = isActive && state === 'waiting'
+  /* Green ONLY while it is actually generating. It used to be green whenever
+     bytes had arrived recently, which meant your own typing turned it green
+     — the echo of a keystroke is output, and the dot could not tell the
+     difference between the agent working and you writing to it. */
+  const dotClass =
+    state === 'question' ? 'mo-ask-dot' : state === 'idle' ? 'mo-idle-dot' : 'mo-live-dot'
+  const dotLabel =
+    state === 'question'
+      ? 'Waiting for your answer'
+      : state === 'idle'
+        ? 'Idle'
+        : 'Running'
   const isNested = nested === true
   const isDisclosure = expanded !== undefined
 
@@ -114,12 +127,7 @@ export function SidebarRow({
           className="flex w-[7px] shrink-0 items-center justify-center"
         >
           {isActive ? (
-            <span
-              className={isWaiting ? 'mo-wait-dot' : 'mo-live-dot'}
-              role="img"
-              aria-label={isWaiting ? 'Waiting for your input' : 'Running'}
-              title={isWaiting ? 'Waiting for your input' : 'Running'}
-            />
+            <span className={dotClass} role="img" aria-label={dotLabel} title={dotLabel} />
           ) : null}
         </span>
         {typeof color === 'string' && color !== '' && (
